@@ -2,20 +2,14 @@ import React, { useState, useEffect } from 'react';
 import MainLayout from '../components/layout/MainLayout';
 import { TrendingDown, Users, AlertCircle, Plus, Trash2, DollarSign } from 'lucide-react';
 import { db } from '../lib/firebase';
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs, addDoc, deleteDoc, updateDoc, doc } from 'firebase/firestore';
 
 const Financial = () => {
   const [employees, setEmployees] = useState([]);
   const [shifts, setShifts] = useState([]);
   
-  // Lista de custos editável
-  const [fixedCosts, setFixedCosts] = useState([
-    { id: 1, name: 'Aluguel', value: 3000 },
-    { id: 2, name: 'Luz', value: 10000 },
-    { id: 3, name: 'Água', value: 200 },
-    { id: 4, name: 'Internet', value: 150 },
-    { id: 5, name: 'Sistema', value: 500 },
-  ]);
+  // Lista de custos (agora começa vazia e vem do banco)
+  const [fixedCosts, setFixedCosts] = useState([]);
 
   // Estados para novo custo
   const [newCostName, setNewCostName] = useState('');
@@ -25,10 +19,17 @@ const Financial = () => {
 
   useEffect(() => {
     const fetchData = async () => {
+      // Busca Funcionários
       const empSnap = await getDocs(collection(db, "employees"));
       setEmployees(empSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      
+      // Busca Escalas
       const shiftSnap = await getDocs(collection(db, "schedules"));
       setShifts(shiftSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+
+      // Busca Custos Operacionais (NOVO)
+      const costsSnap = await getDocs(collection(db, "operational_costs"));
+      setFixedCosts(costsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     };
     fetchData();
   }, []);
@@ -63,26 +64,51 @@ const Financial = () => {
   const totalCost = personnelCost + operationalCost;
   const breakEvenStudents = Math.ceil(totalCost / ticketMedio);
 
-  // Adicionar novo custo
-  const handleAddCost = (e) => {
+  // Adicionar novo custo (Salva no Firebase)
+  const handleAddCost = async (e) => {
     e.preventDefault();
     if (!newCostName || !newCostValue) return;
-    const newId = Date.now(); // ID único simples
-    setFixedCosts([...fixedCosts, { id: newId, name: newCostName, value: parseFloat(newCostValue) }]);
-    setNewCostName('');
-    setNewCostValue('');
+    
+    try {
+      const docRef = await addDoc(collection(db, "operational_costs"), {
+        name: newCostName,
+        value: parseFloat(newCostValue)
+      });
+      // Atualiza a tela imediatamente
+      setFixedCosts([...fixedCosts, { id: docRef.id, name: newCostName, value: parseFloat(newCostValue) }]);
+      setNewCostName('');
+      setNewCostValue('');
+    } catch (error) {
+      console.error("Erro ao salvar:", error);
+      alert("Erro ao salvar custo. Verifique o console.");
+    }
   };
 
-  // Remover custo
-  const handleDeleteCost = (id) => {
-    setFixedCosts(fixedCosts.filter(item => item.id !== id));
+  // Remover custo (Remove do Firebase)
+  const handleDeleteCost = async (id) => {
+    try {
+      await deleteDoc(doc(db, "operational_costs", id));
+      setFixedCosts(fixedCosts.filter(item => item.id !== id));
+    } catch (error) {
+      console.error("Erro ao deletar:", error);
+    }
   };
 
-  // Atualizar valor existente
+  // Atualizar valor na Tela (enquanto digita)
   const handleCostChange = (id, newValue) => {
     setFixedCosts(fixedCosts.map(item => 
       item.id === id ? { ...item, value: parseFloat(newValue) || 0 } : item
     ));
+  };
+
+  // Salvar Edição no Banco (ao sair do campo)
+  const saveCostToDb = async (id, value) => {
+    try {
+      const costRef = doc(db, "operational_costs", id);
+      await updateDoc(costRef, { value: parseFloat(value) });
+    } catch (error) {
+      console.error("Erro ao atualizar:", error);
+    }
   };
 
   return (
@@ -177,6 +203,7 @@ const Financial = () => {
                       type="number"
                       value={item.value}
                       onChange={(e) => handleCostChange(item.id, e.target.value)}
+                      onBlur={() => saveCostToDb(item.id, item.value)}
                       className="bg-transparent text-white text-right font-mono font-medium outline-none w-20 border-b border-transparent focus:border-[#850000] transition-all"
                     />
                   </div>
