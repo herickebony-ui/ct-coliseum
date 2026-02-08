@@ -95,7 +95,7 @@ const Schedule = () => {
     // Só bloqueia o salvamento se não houver novos horários E não houver nada para deletar.
     // Isso permite que você salve uma lista vazia (removendo o funcionário da escala).
     const isDeletingExisting = idsToDeleteOnSave.length > 0 || editingShift;
-    
+
     if (areasWithDays.length === 0 && !isDeletingExisting) {
       return alert("Adicione pelo menos uma modalidade com dias configurados");
     }
@@ -122,7 +122,7 @@ const Schedule = () => {
         for (const day of Object.keys(daysConfig)) {
           const schedule = daysConfig[day];
           // Proteção extra: só cria se tiver start e end
-          if(schedule.start && schedule.end) {
+          if (schedule.start && schedule.end) {
             const shiftData = {
               employeeId: newShift.employeeId,
               day: day,
@@ -164,28 +164,60 @@ const Schedule = () => {
     }
   };
 
-  // Função Inteligente de Edição Global (Detecta quebra de turnos)
+  // Função Inteligente de Edição Global (Agrupa por Horário Similar)
   const handleEditEmployeeGlobal = (empId) => {
     const relatedShifts = shifts.filter(s => s.employeeId === empId);
     if (relatedShifts.length === 0) return alert("Este funcionário ainda não tem turnos.");
 
     const schedulesMap = {};
+    const newBatchConfig = {}; // Vamos configurar os inputs "Padrão" automaticamente
+
+    // Ordenar para garantir consistência (Segunda vem antes de Terça, etc)
+    const dayOrder = { 'Segunda': 1, 'Terça': 2, 'Quarta': 3, 'Quinta': 4, 'Sexta': 5, 'Sábado': 6, 'Domingo': 7 };
+    relatedShifts.sort((a, b) => dayOrder[a.day] - dayOrder[b.day]);
 
     relatedShifts.forEach(s => {
-      let keyToUse = s.area;
-      let counter = 2;
+      let baseKey = s.area;
+      let counter = 1;
+      let foundGroup = false;
 
-      // Se já existe um horário nesse dia para essa área, é um "segundo turno" (ex: pós-almoço)
-      // Então procuramos uma chave livre: Musculação (2), Musculação (3)...
-      while (schedulesMap[keyToUse] && schedulesMap[keyToUse][s.day]) {
-        keyToUse = `${s.area} (${counter})`;
-        counter++;
+      // Tenta encontrar um grupo existente (bloco) onde esse turno se encaixe
+      while (!foundGroup) {
+        // Gera a chave: "Musculação" ou "Musculação (2)" ou "Musculação (3)"
+        const keyToUse = counter === 1 ? baseKey : `${baseKey} (${counter})`;
+
+        // 1. Se o grupo não existe, cria um novo e coloca o turno lá
+        if (!schedulesMap[keyToUse]) {
+          schedulesMap[keyToUse] = {};
+          schedulesMap[keyToUse][s.day] = { start: s.start, end: s.end };
+          
+          // Define o padrão desse novo bloco baseado no primeiro turno adicionado
+          newBatchConfig[keyToUse] = { start: s.start, end: s.end };
+          
+          foundGroup = true;
+        } 
+        else {
+          // 2. Se o grupo existe, verificamos:
+          //    A) O dia está livre?
+          //    B) O horário é IGUAL ao padrão desse bloco? (Essa é a mágica!)
+          
+          const groupStandard = newBatchConfig[keyToUse];
+          const isSameTime = groupStandard.start === s.start && groupStandard.end === s.end;
+          const hasDayConflict = !!schedulesMap[keyToUse][s.day];
+
+          // Só agrupa se for o mesmo horário e não tiver conflito de dia
+          if (isSameTime && !hasDayConflict) {
+            schedulesMap[keyToUse][s.day] = { start: s.start, end: s.end };
+            foundGroup = true;
+          } else {
+            // Se o horário for diferente, tenta o próximo grupo (ex: Musculação (2))
+            counter++;
+          }
+        }
       }
-
-      if (!schedulesMap[keyToUse]) schedulesMap[keyToUse] = {};
-      schedulesMap[keyToUse][s.day] = { start: s.start, end: s.end };
     });
 
+    setBatchConfig(newBatchConfig); // Atualiza os inputs lá de cima
     setNewShift({ employeeId: empId, schedulesByArea: schedulesMap });
     setIdsToDeleteOnSave(relatedShifts.map(s => s.id));
     setEditingShift(null);
@@ -788,6 +820,7 @@ const Schedule = () => {
                           {/* Seleção de Dias */}
                           <div className="mb-3">
                             <p className="text-xs text-gray-400 mb-2">Dias da semana:</p>
+                            {/* Dentro do map das áreas, substitua a parte dos botões de dias por isso: */}
                             <div className="grid grid-cols-4 gap-2">
                               {DAYS.map(day => {
                                 const isDayAdded = !!daysConfig[day];
@@ -796,26 +829,34 @@ const Schedule = () => {
                                     key={day}
                                     type="button"
                                     onClick={() => {
-                                      const newSchedules = { ...newShift.schedulesByArea };
+                                      // Cópia profunda correta para evitar erros de estado
+                                      const newSchedules = {
+                                        ...newShift.schedulesByArea,
+                                        [area]: { ...newShift.schedulesByArea[area] }
+                                      };
+
                                       if (isDayAdded) {
                                         delete newSchedules[area][day];
                                       } else {
-                                        newSchedules[area][day] = { start: '06:00', end: '12:00' };
+                                        // CORREÇÃO: Usa o horário do input "Padrão" ao ativar o dia
+                                        newSchedules[area][day] = {
+                                          start: batchConfig[area]?.start || '06:00',
+                                          end: batchConfig[area]?.end || '12:00'
+                                        };
                                       }
                                       setNewShift({ ...newShift, schedulesByArea: newSchedules });
                                     }}
-                                    disabled={editingShift}
+                                    // Removemos o disabled={editingShift} para permitir alterar dias na edição
                                     className={`text-xs py-2 rounded border transition-all ${isDayAdded
                                       ? 'bg-[#850000] border-[#850000] text-white font-bold'
                                       : 'bg-[#29292e] border-[#323238] text-gray-400 hover:border-[#850000]/50'
-                                      } ${editingShift ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                      }`}
                                   >
                                     {day.substring(0, 3)}
                                   </button>
                                 );
                               })}
                             </div>
-
                             {/* CONTROLES RÁPIDOS (Independentes) */}
                             {!editingShift && (
                               <div className="mt-3 bg-[#232329] border border-[#323238] rounded-lg p-3">
@@ -900,7 +941,7 @@ const Schedule = () => {
                             )}
                           </div>
 
-                          {/* Horários de Cada Dia */}
+                          {/* Horários Individuais */}
                           {Object.keys(daysConfig).length > 0 && (
                             <div className="space-y-2 max-h-60 overflow-y-auto mt-3">
                               <p className="text-xs text-gray-400 mb-2">Horários Individuais:</p>
@@ -910,24 +951,67 @@ const Schedule = () => {
                                   <div key={day} className="bg-[#29292e] border border-[#323238] rounded-lg p-3 group hover:border-gray-500 transition-colors">
                                     <div className="flex items-center gap-3">
                                       <span className="text-white text-sm font-medium w-16">{day.substring(0, 3)}</span>
+
+                                      {/* INPUT DE INÍCIO */}
                                       <input
                                         type="time"
                                         value={schedule.start}
                                         onChange={e => {
-                                          const newSchedules = { ...newShift.schedulesByArea };
-                                          newSchedules[area][day].start = e.target.value;
-                                          setNewShift({ ...newShift, schedulesByArea: newSchedules });
+                                          const newVal = e.target.value;
+
+                                          // 1. Atualiza o estado principal (Turno) de forma segura
+                                          setNewShift(prev => ({
+                                            ...prev,
+                                            schedulesByArea: {
+                                              ...prev.schedulesByArea,
+                                              [area]: {
+                                                ...prev.schedulesByArea[area],
+                                                [day]: { ...prev.schedulesByArea[area][day], start: newVal }
+                                              }
+                                            }
+                                          }));
+
+                                          // 2. Atualiza o input "Padrão" lá em cima (Sync Reverso)
+                                          setBatchConfig(prev => ({
+                                            ...prev,
+                                            [area]: {
+                                              start: newVal,
+                                              end: prev[area]?.end || schedule.end
+                                            }
+                                          }));
                                         }}
                                         className="flex-1 bg-[#1a1a1a] border border-[#323238] rounded px-3 py-2 text-white text-xs outline-none focus:border-[#850000]"
                                       />
+
                                       <span className="text-gray-500">→</span>
+
+                                      {/* INPUT DE FIM */}
                                       <input
                                         type="time"
                                         value={schedule.end}
                                         onChange={e => {
-                                          const newSchedules = { ...newShift.schedulesByArea };
-                                          newSchedules[area][day].end = e.target.value;
-                                          setNewShift({ ...newShift, schedulesByArea: newSchedules });
+                                          const newVal = e.target.value;
+
+                                          // 1. Atualiza o estado principal (Turno)
+                                          setNewShift(prev => ({
+                                            ...prev,
+                                            schedulesByArea: {
+                                              ...prev.schedulesByArea,
+                                              [area]: {
+                                                ...prev.schedulesByArea[area],
+                                                [day]: { ...prev.schedulesByArea[area][day], end: newVal }
+                                              }
+                                            }
+                                          }));
+
+                                          // 2. Atualiza o input "Padrão" lá em cima (Sync Reverso)
+                                          setBatchConfig(prev => ({
+                                            ...prev,
+                                            [area]: {
+                                              start: prev[area]?.start || schedule.start,
+                                              end: newVal
+                                            }
+                                          }));
                                         }}
                                         className="flex-1 bg-[#1a1a1a] border border-[#323238] rounded px-3 py-2 text-white text-xs outline-none focus:border-[#850000]"
                                       />
