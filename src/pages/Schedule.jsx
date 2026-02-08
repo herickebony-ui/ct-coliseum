@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import MainLayout from '../components/layout/MainLayout';
-import { Plus, Trash2, User, Clock, DollarSign, Edit2, Calendar, BarChart3, Filter } from 'lucide-react';
+import { Plus, Trash2, User, Clock, DollarSign, Edit2, Calendar, BarChart3, Filter, X } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 const DAYS = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'];
@@ -11,6 +11,15 @@ const Schedule = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [editingShift, setEditingShift] = useState(null);
+  const [idsToDeleteOnSave, setIdsToDeleteOnSave] = useState([]);
+
+  // Segurança: Limpa a lista de substituição sempre que o modal fecha
+  useEffect(() => {
+    if (!isModalOpen) {
+      setIdsToDeleteOnSave([]);
+      setEditingShift(null);
+    }
+  }, [isModalOpen]);
   const [activeTab, setActiveTab] = useState('grade'); // 'grade' ou 'heatmap'
   const [filterArea, setFilterArea] = useState('all');
   const [filterEmployee, setFilterEmployee] = useState('all');
@@ -64,57 +73,50 @@ const Schedule = () => {
     setLoading(true);
 
     try {
-      if (editingShift) {
-        // EDITAR turno existente
-        const area = Object.keys(newShift.schedulesByArea)[0];
-        const day = Object.keys(newShift.schedulesByArea[area])[0];
-        const schedule = newShift.schedulesByArea[area][day];
-
-        await updateDoc(doc(db, "schedules", editingShift.id), {
-          employeeId: newShift.employeeId,
-          start: schedule.start,
-          end: schedule.end,
-          area: area
-        });
-
-        setShifts(shifts.map(s =>
-          s.id === editingShift.id
-            ? { ...s, employeeId: newShift.employeeId, start: schedule.start, end: schedule.end, area: area }
-            : s
-        ));
-      } else {
-        // CRIAR novos turnos
-        const newShiftsCreated = [];
-
-        for (const area of Object.keys(newShift.schedulesByArea)) {
-          const daysConfig = newShift.schedulesByArea[area];
-
-          for (const day of Object.keys(daysConfig)) {
-            const schedule = daysConfig[day];
-
-            const shiftData = {
-              employeeId: newShift.employeeId,
-              day: day,
-              start: schedule.start,
-              end: schedule.end,
-              area: area
-            };
-
-            const docRef = await addDoc(collection(db, "schedules"), shiftData);
-            newShiftsCreated.push({ id: docRef.id, ...shiftData });
-          }
-        }
-
-        setShifts([...shifts, ...newShiftsCreated]);
+      // 1. LIMPEZA (Se for edição)
+      if (idsToDeleteOnSave.length > 0) {
+        await Promise.all(idsToDeleteOnSave.map(id => deleteDoc(doc(db, "schedules", id))));
+      } else if (editingShift) {
+        await deleteDoc(doc(db, "schedules", editingShift.id));
       }
 
+      // 2. CRIAÇÃO
+      const newShiftsCreated = [];
+
+      for (const key of Object.keys(newShift.schedulesByArea)) {
+        // TRUQUE: Removemos o sufixo " (2)" para salvar no banco com o nome real da área
+        const realAreaName = key.split(' (')[0];
+        const daysConfig = newShift.schedulesByArea[key];
+
+        for (const day of Object.keys(daysConfig)) {
+          const schedule = daysConfig[day];
+          const shiftData = {
+            employeeId: newShift.employeeId,
+            day: day,
+            start: schedule.start,
+            end: schedule.end,
+            area: realAreaName // Salva limpo no banco
+          };
+          const docRef = await addDoc(collection(db, "schedules"), shiftData);
+          newShiftsCreated.push({ id: docRef.id, ...shiftData });
+        }
+      }
+
+      // Atualiza Lista Local
+      const deletedIds = idsToDeleteOnSave.length > 0 ? idsToDeleteOnSave : (editingShift ? [editingShift.id] : []);
+      const updatedList = shifts.filter(s => !deletedIds.includes(s.id));
+      setShifts([...updatedList, ...newShiftsCreated]);
+
+      // Reset
       setNewShift({ employeeId: '', schedulesByArea: {} });
+      setIdsToDeleteOnSave([]);
       setEditingShift(null);
       setIsModalOpen(false);
+
     } catch (error) {
+      console.error(error);
       alert('Erro ao salvar: ' + error.message);
     }
-
     setLoading(false);
   };
 
@@ -126,27 +128,71 @@ const Schedule = () => {
     }
   };
 
+  // Função Inteligente de Edição Global (Detecta quebra de turnos)
+  const handleEditEmployeeGlobal = (empId) => {
+    const relatedShifts = shifts.filter(s => s.employeeId === empId);
+    if (relatedShifts.length === 0) return alert("Este funcionário ainda não tem turnos.");
+
+    const schedulesMap = {};
+
+    relatedShifts.forEach(s => {
+      let keyToUse = s.area;
+      let counter = 2;
+
+      // Se já existe um horário nesse dia para essa área, é um "segundo turno" (ex: pós-almoço)
+      // Então procuramos uma chave livre: Musculação (2), Musculação (3)...
+      while (schedulesMap[keyToUse] && schedulesMap[keyToUse][s.day]) {
+        keyToUse = `${s.area} (${counter})`;
+        counter++;
+      }
+
+      if (!schedulesMap[keyToUse]) schedulesMap[keyToUse] = {};
+      schedulesMap[keyToUse][s.day] = { start: s.start, end: s.end };
+    });
+
+    setNewShift({ employeeId: empId, schedulesByArea: schedulesMap });
+    setIdsToDeleteOnSave(relatedShifts.map(s => s.id));
+    setEditingShift(null);
+    setIsModalOpen(true);
+  };
+
   const handleEditShift = (shift) => {
-    setEditingShift(shift);
+    // 1. Encontrar todos os turnos desse funcionário NESTA área (ex: Toda a musculação da Maria)
+    const relatedShifts = shifts.filter(s =>
+      s.employeeId === shift.employeeId &&
+      s.area === shift.area
+    );
+
+    // 2. Construir o objeto de horários para preencher o modal
+    const schedulesMap = {};
+    relatedShifts.forEach(s => {
+      schedulesMap[s.day] = { start: s.start, end: s.end };
+    });
+
+    // 3. Preencher o formulário completo
     setNewShift({
       employeeId: shift.employeeId,
       schedulesByArea: {
-        [shift.area]: {
-          [shift.day]: {
-            start: shift.start,
-            end: shift.end
-          }
-        }
+        [shift.area]: schedulesMap
       }
     });
+
+    // 4. Marcar esses IDs para serem substituídos ao salvar
+    setIdsToDeleteOnSave(relatedShifts.map(s => s.id));
+
+    // 5. TRUQUE: Deixamos editingShift como NULL.
+    // Isso faz o modal pensar que é um "Novo Cadastro", liberando 
+    // a troca de funcionário, adição de dias e exclusão de horários livremente.
+    setEditingShift(null);
+
     setIsModalOpen(true);
   };
   // --- CÁLCULOS FINANCEIROS (O Cérebro) ---
 
   // A. Custo dos Mensalistas (Fixo) - APENAS OS QUE ESTÃO NA ESCALA
-const fixedCost = employees
-.filter(e => e.type === 'mensalista' && shifts.some(s => s.employeeId === e.id))
-.reduce((acc, curr) => acc + (parseFloat(curr.value) || 0), 0);
+  const fixedCost = employees
+    .filter(e => e.type === 'mensalista' && shifts.some(s => s.employeeId === e.id))
+    .reduce((acc, curr) => acc + (parseFloat(curr.value) || 0), 0);
 
   // B. Custo dos Horistas (Baseado na Escala)
   const calculateShiftCost = (shift) => {
@@ -370,7 +416,14 @@ const fixedCost = employees
                 }
 
                 return (
-                  <div key={emp.id} className="bg-[#1a1a1a] border border-[#323238] rounded-lg p-4">
+                  <div key={emp.id} className="bg-[#1a1a1a] border border-[#323238] rounded-lg p-4 relative group">
+                    <button
+                      onClick={() => handleEditEmployeeGlobal(emp.id)}
+                      className="absolute top-2 right-2 p-1.5 text-gray-500 hover:text-white hover:bg-[#323238] rounded-lg opacity-0 group-hover:opacity-100 transition-all"
+                      title="Editar Grade Completa"
+                    >
+                      <Edit2 size={16} />
+                    </button>
                     <div className="flex items-center gap-3 mb-3">
                       <div className="w-10 h-10 rounded-full bg-[#29292e] border border-[#323238] flex items-center justify-center text-sm font-bold text-white">
                         {emp.name.charAt(0)}
@@ -533,20 +586,67 @@ const fixedCost = employees
                       <span className="text-sm font-medium text-white">{day}</span>
                     </td>
                     {HOURS.map(hour => {
-                      const count = countPeopleByHourFiltered(day, hour);
-                      return (
-                        <td
-                          key={`${day}-${hour}`}
-                          className="p-2 border-b border-r border-[#323238] text-center"
-                        >
-                          <div className={`${getCellColor(count)} border rounded-lg p-2 min-h-[50px] flex items-center justify-center transition-all hover:opacity-80`}>
-                            <span className={`text-lg font-bold ${getCellTextColor(count)}`}>
-                              {count}
-                            </span>
-                          </div>
-                        </td>
-                      );
-                    })}
+                                            const count = countPeopleByHourFiltered(day, hour);
+                                            return (
+                                                <td 
+                                                    key={`${day}-${hour}`} 
+                                                    className="p-2 border-b border-r border-[#323238] text-center align-middle"
+                                                >
+                                                    <div 
+                                                        onClick={() => {
+                                                            if (count > 0) {
+                                                                // Agora salvamos um objeto com { funcionário, turno }
+                                                                const items = filteredShifts.filter(shift => {
+                                                                    if (shift.day !== day) return false;
+                                                                    const start = parseInt(shift.start.split(':')[0]);
+                                                                    const end = parseInt(shift.end.split(':')[0]);
+                                                                    return hour >= start && hour < end;
+                                                                }).map(s => ({
+                                                                    employee: employees.find(e => e.id === s.employeeId),
+                                                                    shift: s
+                                                                }));
+                                                                
+                                                                setViewingCell({ day, hour, items: items });
+                                                            }
+                                                        }}
+                                                        className={`${getCellColor(count)} border rounded-lg p-2 min-h-[50px] flex items-center justify-center transition-all hover:opacity-80 cursor-pointer relative`}
+                                                    >
+                                                        <span className={`text-lg font-bold ${getCellTextColor(count)}`}>
+                                                            {count}
+                                                        </span>
+                                                        
+                                                        {/* Tooltip Fixo (Correção visual do modal) */}
+                                                        {viewingCell && viewingCell.day === day && viewingCell.hour === hour && (
+                                                            <div 
+                                                                className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-[2px] cursor-default"
+                                                                onClick={(e) => { e.stopPropagation(); setViewingCell(null); }}
+                                                            >
+                                                                <div 
+                                                                    className="bg-[#121214] border border-[#323238] rounded-xl shadow-2xl p-4 w-64 animate-in fade-in zoom-in duration-200"
+                                                                    onClick={(e) => e.stopPropagation()} 
+                                                                >
+                                                                    <div className="flex justify-between items-center mb-3 border-b border-[#323238] pb-2">
+                                                                        <div className="flex flex-col text-left">
+                                                                            <span className="text-sm font-bold text-white">{day}</span>
+                                                                            <span className="text-xs text-[#850000] font-mono">{hour}:00 - {hour + 1}:00</span>
+                                                                        </div>
+                                                                        <button 
+                                                                            onClick={() => setViewingCell(null)}
+                                                                            className="text-gray-500 hover:text-white bg-[#29292e] rounded-full p-1"
+                                                                        >
+                                                                            ✕
+                                                                        </button>
+                                                                    </div>
+                                                                    
+                                                                    <div className="space-y-2 max-h-60 overflow-y-auto custom-scrollbar text-left">                                                                       
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                            );
+                                        })}
                   </tr>
                 ))}
               </tbody>
@@ -580,38 +680,36 @@ const fixedCost = employees
                 </select>
               </div>
 
-              {/* 2. Adicionar Modalidades */}
+              {/* 2. Adicionar Modalidades (Com suporte a múltiplos turnos) */}
               {newShift.employeeId && !editingShift && (
                 <div>
-                  <label className="text-sm text-gray-400 mb-2 block">Modalidades</label>
+                  <label className="text-sm text-gray-400 mb-2 block">Adicionar Bloco de Horário</label>
                   <div className="flex gap-2 flex-wrap">
                     {availableAreas.map(area => {
-                      const isAdded = newShift.schedulesByArea[area];
                       return (
                         <button
                           key={area}
                           type="button"
                           onClick={() => {
-                            if (isAdded) {
-                              const newSchedules = { ...newShift.schedulesByArea };
-                              delete newSchedules[area];
-                              setNewShift({ ...newShift, schedulesByArea: newSchedules });
-                            } else {
-                              setNewShift({
-                                ...newShift,
-                                schedulesByArea: {
-                                  ...newShift.schedulesByArea,
-                                  [area]: {}
-                                }
-                              });
+                            // Lógica para gerar chave única: Musculação -> Musculação (2) -> Musculação (3)
+                            let newKey = area;
+                            let counter = 2;
+                            while (newShift.schedulesByArea[newKey]) {
+                              newKey = `${area} (${counter})`;
+                              counter++;
                             }
+
+                            setNewShift({
+                              ...newShift,
+                              schedulesByArea: {
+                                ...newShift.schedulesByArea,
+                                [newKey]: {}
+                              }
+                            });
                           }}
-                          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${isAdded
-                              ? 'bg-[#850000] text-white'
-                              : 'bg-[#1a1a1a] border border-[#323238] text-gray-400 hover:border-[#850000]/50'
-                            }`}
+                          className="px-4 py-2 rounded-lg text-sm font-medium transition-all bg-[#1a1a1a] border border-[#323238] text-gray-400 hover:border-[#850000] hover:text-white"
                         >
-                          {area}
+                          + {area}
                         </button>
                       );
                     })}
@@ -627,14 +725,27 @@ const fixedCost = employees
                   {Object.keys(newShift.schedulesByArea).map(area => {
                     const emp = employees.find(e => e.id === newShift.employeeId);
                     const valueForArea = emp?.valuesByArea?.[area] || parseFloat(emp?.value) || 0;
-                    const daysConfig = newShift.schedulesByArea[area];
+                    const daysConfig = newShift.schedulesByArea[area]; // Importante: Definido antes!
+
+                    const totalHoursArea = Object.values(daysConfig).reduce((acc, curr) => {
+                      // Garante que start/end existam antes de calcular
+                      if (!curr.start || !curr.end) return acc;
+                      const s = parseInt(curr.start.split(':')[0]);
+                      const e = parseInt(curr.end.split(':')[0]);
+                      return acc + (e - s);
+                    }, 0);
 
                     return (
                       <div key={area} className="bg-[#1a1a1a] border border-[#323238] rounded-xl p-4">
                         {/* Cabeçalho da Modalidade */}
                         <div className="flex items-center justify-between mb-3">
                           <div>
-                            <h4 className="text-white font-bold">{area}</h4>
+                            <div className="flex items-baseline gap-2">
+                              <h4 className="text-white font-bold">{area}</h4>
+                              <span className="text-xs text-gray-400 font-medium bg-[#29292e] px-2 py-0.5 rounded border border-[#323238]">
+                                {totalHoursArea}h sem
+                              </span>
+                            </div>
                             {emp?.type === 'hora_aula' && (
                               <p className="text-xs text-green-400 font-mono">R$ {valueForArea.toFixed(2)}/h</p>
                             )}
@@ -675,8 +786,8 @@ const fixedCost = employees
                                   }}
                                   disabled={editingShift}
                                   className={`text-xs py-2 rounded border transition-all ${isDayAdded
-                                      ? 'bg-[#850000] border-[#850000] text-white font-bold'
-                                      : 'bg-[#29292e] border-[#323238] text-gray-400 hover:border-[#850000]/50'
+                                    ? 'bg-[#850000] border-[#850000] text-white font-bold'
+                                    : 'bg-[#29292e] border-[#323238] text-gray-400 hover:border-[#850000]/50'
                                     } ${editingShift ? 'opacity-50 cursor-not-allowed' : ''}`}
                                 >
                                   {day.substring(0, 3)}
@@ -686,34 +797,80 @@ const fixedCost = employees
                           </div>
 
                           {/* Botões Seg-Sex e Limpar */}
+                          {/* CONTROLES RÁPIDOS: Botões de Dias e Replicador de Horário */}
                           {!editingShift && (
-                            <div className="flex gap-2 mt-2">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const newSchedules = { ...newShift.schedulesByArea };
-                                  ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta'].forEach(day => {
-                                    if (!newSchedules[area][day]) {
-                                      newSchedules[area][day] = { start: '06:00', end: '12:00' };
+                            <div className="mt-3 bg-[#232329] border border-[#323238] rounded-lg p-3">
+
+                              {/* Linha 1: Botões de Seleção de Dias */}
+                              <div className="flex justify-between items-center mb-3 pb-3 border-b border-[#323238]">
+                                <span className="text-xs text-gray-400">Seleção de Dias:</span>
+                                <div className="flex gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const newSchedules = { ...newShift.schedulesByArea };
+                                      ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta'].forEach(day => {
+                                        if (!newSchedules[area][day]) {
+                                          newSchedules[area][day] = { start: batchStartTime, end: batchEndTime };
+                                        }
+                                      });
+                                      setNewShift({ ...newShift, schedulesByArea: newSchedules });
+                                    }}
+                                    className="text-xs px-3 py-1 bg-[#121214] border border-[#323238] rounded text-gray-400 hover:text-white hover:border-[#850000] transition-all"
+                                  >
+                                    + Seg-Sex
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const newSchedules = { ...newShift.schedulesByArea };
+                                      newSchedules[area] = {};
+                                      setNewShift({ ...newShift, schedulesByArea: newSchedules });
+                                    }}
+                                    className="text-xs px-3 py-1 bg-[#121214] border border-[#323238] rounded text-gray-400 hover:text-red-400 transition-all"
+                                  >
+                                    Limpar Dias
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Linha 2: Replicador de Horário (Entrada/Saída para Todos) */}
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs text-gray-400">Padrão:</span>
+                                  <input
+                                    type="time"
+                                    value={batchStartTime}
+                                    onChange={e => setBatchStartTime(e.target.value)}
+                                    className="bg-[#121214] border border-[#323238] rounded px-2 py-1 text-xs text-white focus:border-[#850000] outline-none w-20"
+                                  />
+                                  <span className="text-gray-500 text-xs">até</span>
+                                  <input
+                                    type="time"
+                                    value={batchEndTime}
+                                    onChange={e => setBatchEndTime(e.target.value)}
+                                    className="bg-[#121214] border border-[#323238] rounded px-2 py-1 text-xs text-white focus:border-[#850000] outline-none w-20"
+                                  />
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const newSchedules = { ...newShift.schedulesByArea };
+                                    // Aplica o horário APENAS nos dias que já estão selecionados (ativos)
+                                    if (Object.keys(newSchedules[area] || {}).length === 0) {
+                                      alert("Selecione os dias da semana primeiro.");
+                                      return;
                                     }
-                                  });
-                                  setNewShift({ ...newShift, schedulesByArea: newSchedules });
-                                }}
-                                className="text-xs px-3 py-1 bg-[#29292e] border border-[#323238] rounded text-gray-400 hover:text-white hover:border-[#850000]/50"
-                              >
-                                Seg-Sex
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const newSchedules = { ...newShift.schedulesByArea };
-                                  newSchedules[area] = {};
-                                  setNewShift({ ...newShift, schedulesByArea: newSchedules });
-                                }}
-                                className="text-xs px-3 py-1 bg-[#29292e] border border-[#323238] rounded text-gray-400 hover:text-red-400"
-                              >
-                                Limpar
-                              </button>
+                                    Object.keys(newSchedules[area]).forEach(day => {
+                                      newSchedules[area][day] = { start: batchStartTime, end: batchEndTime };
+                                    });
+                                    setNewShift({ ...newShift, schedulesByArea: newSchedules });
+                                  }}
+                                  className="text-xs bg-[#850000] hover:bg-red-700 text-white px-3 py-1.5 rounded transition-all font-bold shadow-neon"
+                                >
+                                  Aplicar a Todos
+                                </button>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -794,6 +951,67 @@ const fixedCost = employees
           </div>
         </div>
       )}
+      {/* Modal de Detalhes do Heatmap (Corrigido e Protegido) */}
+      {viewingCell && (
+                <div 
+                    className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+                    onClick={() => setViewingCell(null)}
+                >
+                    <div 
+                        className="bg-[#121214] border border-[#323238] rounded-xl shadow-2xl p-6 w-full max-w-sm animate-in fade-in zoom-in duration-200"
+                        onClick={(e) => e.stopPropagation()} 
+                    >
+                        {/* Cabeçalho do Modal */}
+                        <div className="flex justify-between items-center mb-4 border-b border-[#323238] pb-3">
+                            <div>
+                                <h4 className="text-lg font-bold text-white">{viewingCell.day}</h4>
+                                <p className="text-sm text-[#850000] font-mono mt-1">
+                                    {viewingCell.hour}:00 - {viewingCell.hour + 1}:00
+                                </p>
+                            </div>
+                            <button 
+                                onClick={() => setViewingCell(null)}
+                                className="text-gray-400 hover:text-white bg-[#29292e] hover:bg-[#323238] rounded-full p-2 transition-colors"
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+                        
+                        {/* Lista de Pessoas e Horários */}
+                        <div className="space-y-3 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">
+                            {viewingCell.items && viewingCell.items.length > 0 ? (
+                                viewingCell.items.map((item, idx) => (
+                                    <div key={idx} className="flex items-center gap-3 bg-[#1a1a1a] p-3 rounded-xl border border-[#29292e] hover:border-[#323238] transition-colors">
+                                        {/* Avatar */}
+                                        <div className="w-10 h-10 rounded-full bg-[#29292e] border border-[#323238] flex items-center justify-center text-sm text-white font-bold shrink-0">
+                                            {item.employee?.name?.charAt(0)}
+                                        </div>
+                                        
+                                        {/* Informações */}
+                                        <div className="flex flex-col min-w-0 flex-1">
+                                            <div className="flex justify-between items-start">
+                                                <span className="text-white font-medium truncate text-sm">{item.employee?.name}</span>
+                                                {/* Horário Destacado */}
+                                                <div className="flex items-center gap-1 bg-[#29292e] px-1.5 py-0.5 rounded border border-[#323238]">
+                                                    <Clock size={10} className="text-[#850000]" />
+                                                    <span className="text-[10px] text-white font-mono">
+                                                        {item.shift.start} - {item.shift.end}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            <span className="text-xs text-gray-500 uppercase tracking-wider">{item.employee?.role}</span>
+                                        </div>
+                                    </div>
+                                ))
+                            ) : (
+                                <div className="text-center py-8 opacity-50">
+                                    <p className="text-sm text-gray-400">Ninguém escalado neste horário.</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
     </MainLayout>
   );
 };

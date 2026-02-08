@@ -1,7 +1,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
-import Login from './pages/Login';
+import Login from "./pages/Login.jsx";
 import Users from './pages/Users';
 import Dashboard from './pages/Dashboard';
 import Settings from './pages/Settings';
