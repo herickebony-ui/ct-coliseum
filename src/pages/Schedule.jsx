@@ -26,8 +26,7 @@ const Schedule = () => {
   const [filterEmployee, setFilterEmployee] = useState('all');
 
   const [viewingCell, setViewingCell] = useState(null); 
-  const [batchStartTime, setBatchStartTime] = useState('06:00');
-  const [batchEndTime, setBatchEndTime] = useState('12:00');
+  const [batchConfig, setBatchConfig] = useState({}); // Configuração individual por bloco
   // Função auxiliar para calcular duração
   const calculateDuration = (start, end) => {
     if (!start || !end) return null;
@@ -808,212 +807,232 @@ const Schedule = () => {
                   <label className="text-sm text-gray-400 block">Configurar Horários</label>
 
                   {Object.keys(newShift.schedulesByArea).map(area => {
-                    const emp = employees.find(e => e.id === newShift.employeeId);
-                    const valueForArea = emp?.valuesByArea?.[area] || parseFloat(emp?.value) || 0;
-                    const daysConfig = newShift.schedulesByArea[area]; // Importante: Definido antes!
+                const emp = employees.find(e => e.id === newShift.employeeId);
+                const valueForArea = emp?.valuesByArea?.[area] || parseFloat(emp?.value) || 0;
+                const daysConfig = newShift.schedulesByArea[area];
 
-                    const totalHoursArea = Object.values(daysConfig).reduce((acc, curr) => {
-                      // Garante que start/end existam antes de calcular
-                      if (!curr.start || !curr.end) return acc;
-                      const s = parseInt(curr.start.split(':')[0]);
-                      const e = parseInt(curr.end.split(':')[0]);
-                      return acc + (e - s);
-                    }, 0);
+                // 1. Define o Padrão Local (Se não existir, usa 06:00 - 12:00)
+                const currentBatchStart = batchConfig[area]?.start || '06:00';
+                const currentBatchEnd = batchConfig[area]?.end || '12:00';
 
-                    return (
-                      <div key={area} className="bg-[#1a1a1a] border border-[#323238] rounded-xl p-4">
-                        {/* Cabeçalho da Modalidade */}
-                        <div className="flex items-center justify-between mb-3">
-                          <div>
-                            <div className="flex items-baseline gap-2">
-                              <h4 className="text-white font-bold">{area}</h4>
-                              <span className="text-xs text-gray-400 font-medium bg-[#29292e] px-2 py-0.5 rounded border border-[#323238]">
-                                {totalHoursArea}h sem
+                const totalHoursArea = Object.values(daysConfig).reduce((acc, curr) => {
+                  if (!curr.start || !curr.end) return acc;
+                  const s = parseInt(curr.start.split(':')[0]);
+                  const e = parseInt(curr.end.split(':')[0]);
+                  return acc + (e - s);
+                }, 0);
+
+                return (
+                  <div key={area} className="bg-[#1a1a1a] border border-[#323238] rounded-xl p-4">
+                    {/* Cabeçalho da Modalidade */}
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <div className="flex items-baseline gap-2">
+                          <h4 className="text-white font-bold">{area}</h4>
+                          <span className="text-xs text-gray-400 font-medium bg-[#29292e] px-2 py-0.5 rounded border border-[#323238]">
+                            {totalHoursArea}h sem
+                          </span>
+                        </div>
+                        {emp?.type === 'hora_aula' && (
+                          <p className="text-xs text-green-400 font-mono">R$ {valueForArea.toFixed(2)}/h</p>
+                        )}
+                      </div>
+                      {!editingShift && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newSchedules = { ...newShift.schedulesByArea };
+                            delete newSchedules[area];
+                            setNewShift({ ...newShift, schedulesByArea: newSchedules });
+                            // Limpa config local também
+                            const newBatch = { ...batchConfig };
+                            delete newBatch[area];
+                            setBatchConfig(newBatch);
+                          }}
+                          className="text-red-400 hover:text-red-300 text-xs"
+                        >
+                          Remover
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Seleção de Dias */}
+                    <div className="mb-3">
+                      <p className="text-xs text-gray-400 mb-2">Dias da semana:</p>
+                      <div className="grid grid-cols-4 gap-2">
+                        {DAYS.map(day => {
+                          const isDayAdded = !!daysConfig[day];
+                          return (
+                            <button
+                              key={day}
+                              type="button"
+                              onClick={() => {
+                                const newSchedules = { ...newShift.schedulesByArea };
+                                if (isDayAdded) {
+                                  delete newSchedules[area][day];
+                                } else {
+                                  newSchedules[area][day] = { start: '06:00', end: '12:00' };
+                                }
+                                setNewShift({ ...newShift, schedulesByArea: newSchedules });
+                              }}
+                              disabled={editingShift}
+                              className={`text-xs py-2 rounded border transition-all ${isDayAdded
+                                ? 'bg-[#850000] border-[#850000] text-white font-bold'
+                                : 'bg-[#29292e] border-[#323238] text-gray-400 hover:border-[#850000]/50'
+                                } ${editingShift ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            >
+                              {day.substring(0, 3)}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* CONTROLES RÁPIDOS (Independentes) */}
+                      {!editingShift && (
+                        <div className="mt-3 bg-[#232329] border border-[#323238] rounded-lg p-3">
+                          <div className="flex justify-between items-center mb-3 pb-3 border-b border-[#323238]">
+                            <span className="text-xs text-gray-400">Seleção de Dias:</span>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const newSchedules = { ...newShift.schedulesByArea };
+                                  ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta'].forEach(day => {
+                                    if (!newSchedules[area][day]) {
+                                      newSchedules[area][day] = { start: currentBatchStart, end: currentBatchEnd };
+                                    }
+                                  });
+                                  setNewShift({ ...newShift, schedulesByArea: newSchedules });
+                                }}
+                                className="text-xs px-3 py-1 bg-[#121214] border border-[#323238] rounded text-gray-400 hover:text-white hover:border-[#850000] transition-all"
+                              >
+                                + Seg-Sex
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const newSchedules = { ...newShift.schedulesByArea };
+                                  newSchedules[area] = {};
+                                  setNewShift({ ...newShift, schedulesByArea: newSchedules });
+                                }}
+                                className="text-xs px-3 py-1 bg-[#121214] border border-[#323238] rounded text-gray-400 hover:text-red-400 transition-all"
+                              >
+                                Limpar Dias
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Replicador de Horário (LOCAL) */}
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-gray-400">Padrão:</span>
+                              <input
+                                type="time"
+                                value={currentBatchStart}
+                                onChange={e => setBatchConfig({ 
+                                    ...batchConfig, 
+                                    [area]: { start: e.target.value, end: currentBatchEnd } 
+                                })}
+                                className="bg-[#121214] border border-[#323238] rounded px-2 py-1 text-xs text-white focus:border-[#850000] outline-none w-20"
+                              />
+                              <span className="text-gray-500 text-xs">até</span>
+                              <input
+                                type="time"
+                                value={currentBatchEnd}
+                                onChange={e => setBatchConfig({ 
+                                    ...batchConfig, 
+                                    [area]: { start: currentBatchStart, end: e.target.value } 
+                                })}
+                                className="bg-[#121214] border border-[#323238] rounded px-2 py-1 text-xs text-white focus:border-[#850000] outline-none w-20"
+                              />
+                              <span className="text-xs text-[#850000] font-mono font-bold ml-1 bg-[#850000]/10 px-1.5 py-0.5 rounded border border-[#850000]/30">
+                                {calculateDuration(currentBatchStart, currentBatchEnd)}
                               </span>
                             </div>
-                            {emp?.type === 'hora_aula' && (
-                              <p className="text-xs text-green-400 font-mono">R$ {valueForArea.toFixed(2)}/h</p>
-                            )}
-                          </div>
-                          {!editingShift && (
                             <button
                               type="button"
                               onClick={() => {
                                 const newSchedules = { ...newShift.schedulesByArea };
-                                delete newSchedules[area];
+                                if (Object.keys(newSchedules[area] || {}).length === 0) {
+                                  alert("Selecione os dias da semana primeiro.");
+                                  return;
+                                }
+                                Object.keys(newSchedules[area]).forEach(day => {
+                                  newSchedules[area][day] = { start: currentBatchStart, end: currentBatchEnd };
+                                });
                                 setNewShift({ ...newShift, schedulesByArea: newSchedules });
                               }}
-                              className="text-red-400 hover:text-red-300 text-xs"
+                              className="text-xs bg-[#850000] hover:bg-red-700 text-white px-3 py-1.5 rounded transition-all font-bold shadow-neon"
                             >
-                              Remover
+                              Aplicar a Todos
                             </button>
-                          )}
+                          </div>
                         </div>
+                      )}
+                    </div>
 
-                        {/* Seleção de Dias */}
-                        <div className="mb-3">
-                          <p className="text-xs text-gray-400 mb-2">Dias da semana:</p>
-                          <div className="grid grid-cols-4 gap-2">
-                            {DAYS.map(day => {
-                              const isDayAdded = !!daysConfig[day];
-                              return (
-                                <button
-                                  key={day}
-                                  type="button"
-                                  onClick={() => {
+                    {/* Horários de Cada Dia */}
+                    {Object.keys(daysConfig).length > 0 && (
+                      <div className="space-y-2 max-h-60 overflow-y-auto mt-3">
+                        <p className="text-xs text-gray-400 mb-2">Horários Individuais:</p>
+                        {Object.keys(daysConfig).sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b)).map(day => {
+                          const schedule = daysConfig[day];
+                          return (
+                            <div key={day} className="bg-[#29292e] border border-[#323238] rounded-lg p-3 group hover:border-gray-500 transition-colors">
+                              <div className="flex items-center gap-3">
+                                <span className="text-white text-sm font-medium w-16">{day.substring(0, 3)}</span>
+                                <input
+                                  type="time"
+                                  value={schedule.start}
+                                  onChange={e => {
                                     const newSchedules = { ...newShift.schedulesByArea };
-                                    if (isDayAdded) {
-                                      delete newSchedules[area][day];
-                                    } else {
-                                      newSchedules[area][day] = { start: '06:00', end: '12:00' };
-                                    }
+                                    newSchedules[area][day].start = e.target.value;
                                     setNewShift({ ...newShift, schedulesByArea: newSchedules });
                                   }}
-                                  disabled={editingShift}
-                                  className={`text-xs py-2 rounded border transition-all ${isDayAdded
-                                    ? 'bg-[#850000] border-[#850000] text-white font-bold'
-                                    : 'bg-[#29292e] border-[#323238] text-gray-400 hover:border-[#850000]/50'
-                                    } ${editingShift ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                >
-                                  {day.substring(0, 3)}
-                                </button>
-                              );
-                            })}
-                          </div>
-
-                          {/* Botões Seg-Sex e Limpar */}
-                          {/* CONTROLES RÁPIDOS: Botões de Dias e Replicador de Horário */}
-                          {!editingShift && (
-                            <div className="mt-3 bg-[#232329] border border-[#323238] rounded-lg p-3">
-
-                              {/* Linha 1: Botões de Seleção de Dias */}
-                              <div className="flex justify-between items-center mb-3 pb-3 border-b border-[#323238]">
-                                <span className="text-xs text-gray-400">Seleção de Dias:</span>
-                                <div className="flex gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const newSchedules = { ...newShift.schedulesByArea };
-                                      ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta'].forEach(day => {
-                                        if (!newSchedules[area][day]) {
-                                          newSchedules[area][day] = { start: batchStartTime, end: batchEndTime };
-                                        }
-                                      });
-                                      setNewShift({ ...newShift, schedulesByArea: newSchedules });
-                                    }}
-                                    className="text-xs px-3 py-1 bg-[#121214] border border-[#323238] rounded text-gray-400 hover:text-white hover:border-[#850000] transition-all"
-                                  >
-                                    + Seg-Sex
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const newSchedules = { ...newShift.schedulesByArea };
-                                      newSchedules[area] = {};
-                                      setNewShift({ ...newShift, schedulesByArea: newSchedules });
-                                    }}
-                                    className="text-xs px-3 py-1 bg-[#121214] border border-[#323238] rounded text-gray-400 hover:text-red-400 transition-all"
-                                  >
-                                    Limpar Dias
-                                  </button>
-                                </div>
-                              </div>
-
-                              {/* Linha 2: Replicador de Horário (Com Duração) */}
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs text-gray-400">Padrão:</span>
-                                  <input
-                                    type="time"
-                                    value={batchStartTime}
-                                    onChange={e => setBatchStartTime(e.target.value)}
-                                    className="bg-[#121214] border border-[#323238] rounded px-2 py-1 text-xs text-white focus:border-[#850000] outline-none w-20"
-                                  />
-                                  <span className="text-gray-500 text-xs">até</span>
-                                  <input
-                                    type="time"
-                                    value={batchEndTime}
-                                    onChange={e => setBatchEndTime(e.target.value)}
-                                    className="bg-[#121214] border border-[#323238] rounded px-2 py-1 text-xs text-white focus:border-[#850000] outline-none w-20"
-                                  />
-                                  {/* Mostra a duração do padrão */}
-                                  <span className="text-xs text-[#850000] font-mono font-bold ml-1 bg-[#850000]/10 px-1.5 py-0.5 rounded border border-[#850000]/30">
-                                    {calculateDuration(batchStartTime, batchEndTime)}
+                                  className="flex-1 bg-[#1a1a1a] border border-[#323238] rounded px-3 py-2 text-white text-xs outline-none focus:border-[#850000]"
+                                />
+                                <span className="text-gray-500">→</span>
+                                <input
+                                  type="time"
+                                  value={schedule.end}
+                                  onChange={e => {
+                                    const newSchedules = { ...newShift.schedulesByArea };
+                                    newSchedules[area][day].end = e.target.value;
+                                    setNewShift({ ...newShift, schedulesByArea: newSchedules });
+                                  }}
+                                  className="flex-1 bg-[#1a1a1a] border border-[#323238] rounded px-3 py-2 text-white text-xs outline-none focus:border-[#850000]"
+                                />
+                                
+                                <div className="w-20 text-right">
+                                  <span className="text-[#850000] text-xs font-mono font-bold bg-[#1a1a1a] px-2 py-1 rounded border border-[#323238]">
+                                    {calculateDuration(schedule.start, schedule.end)}
                                   </span>
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const newSchedules = { ...newShift.schedulesByArea };
-                                    // Aplica o horário APENAS nos dias que já estão selecionados (ativos)
-                                    if (Object.keys(newSchedules[area] || {}).length === 0) {
-                                      alert("Selecione os dias da semana primeiro.");
-                                      return;
-                                    }
-                                    Object.keys(newSchedules[area]).forEach(day => {
-                                      newSchedules[area][day] = { start: batchStartTime, end: batchEndTime };
-                                    });
-                                    setNewShift({ ...newShift, schedulesByArea: newSchedules });
-                                  }}
-                                  className="text-xs bg-[#850000] hover:bg-red-700 text-white px-3 py-1.5 rounded transition-all font-bold shadow-neon"
-                                >
-                                  Aplicar a Todos
-                                </button>
                               </div>
                             </div>
-                          )}
-                        </div>
-
-                        {/* Horários de Cada Dia */}
-                        {Object.keys(daysConfig).length > 0 && (
-                          <div className="space-y-2 max-h-60 overflow-y-auto">
-                            <p className="text-xs text-gray-400 mb-2">Horários:</p>
-                            {Object.keys(daysConfig).sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b)).map(day => {
-                              const schedule = daysConfig[day];
-                              return (
-                                <div key={day} className="bg-[#29292e] border border-[#323238] rounded-lg p-3 group hover:border-gray-500 transition-colors">
-                                  <div className="flex items-center gap-3">
-                                    <span className="text-white text-sm font-medium w-16">{day.substring(0, 3)}</span>
-                                    <input
-                                      type="time"
-                                      value={schedule.start}
-                                      onChange={e => {
-                                        const newSchedules = { ...newShift.schedulesByArea };
-                                        newSchedules[area][day].start = e.target.value;
-                                        setNewShift({ ...newShift, schedulesByArea: newSchedules });
-                                      }}
-                                      className="flex-1 bg-[#1a1a1a] border border-[#323238] rounded px-3 py-2 text-white text-xs outline-none focus:border-[#850000]"
-                                    />
-                                    <span className="text-gray-500">→</span>
-                                    <input
-                                      type="time"
-                                      value={schedule.end}
-                                      onChange={e => {
-                                        const newSchedules = { ...newShift.schedulesByArea };
-                                        newSchedules[area][day].end = e.target.value;
-                                        setNewShift({ ...newShift, schedulesByArea: newSchedules });
-                                      }}
-                                      className="flex-1 bg-[#1a1a1a] border border-[#323238] rounded px-3 py-2 text-white text-xs outline-none focus:border-[#850000]"
-                                    />
-                                    
-                                    {/* Duração Calculada */}
-                                    <div className="w-20 text-right">
-                                      <span className="text-[#850000] text-xs font-mono font-bold bg-[#1a1a1a] px-2 py-1 rounded border border-[#323238]">
-                                        {calculateDuration(schedule.start, schedule.end)}
-                                      </span>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
+                          );
+                        })}
                       </div>
-                    );
-                  })}
+                    )}
+                  </div>
+                );
+              })}
                 </div>
               )}
-
+              {/* Total Geral de Horas (Soma de todos os blocos) */}
+              <div className="flex justify-between items-center bg-[#1a1a1a] border border-[#323238] rounded-lg p-3">
+                 <span className="text-gray-400 text-sm">Total de Horas Semanais:</span>
+                 <span className="text-white font-bold font-mono text-lg">
+                   {Object.values(newShift.schedulesByArea).reduce((accArea, areaDays) => {
+                      return accArea + Object.values(areaDays).reduce((accDay, curr) => {
+                         if (!curr.start || !curr.end) return accDay;
+                         const s = parseInt(curr.start.split(':')[0]);
+                         const e = parseInt(curr.end.split(':')[0]);
+                         return accDay + (e - s);
+                      }, 0);
+                   }, 0)}h
+                 </span>
+              </div>
               {/* Botões */}
               <div className="flex gap-3 pt-4">
                 <button
