@@ -81,51 +81,66 @@ const Schedule = () => {
   }, []);
 
   // 2. Salvar Turno
+  // 2. Salvar Turno (Corrigido para permitir remoção)
   const handleAddShift = async (e) => {
     e.preventDefault();
     if (!newShift.employeeId) return alert("Selecione um funcionário");
 
+    // Verifica quais áreas têm dias configurados
     const areasWithDays = Object.keys(newShift.schedulesByArea).filter(
       area => Object.keys(newShift.schedulesByArea[area]).length > 0
     );
 
-    if (areasWithDays.length === 0) return alert("Adicione pelo menos uma modalidade com dias configurados");
+    // CORREÇÃO AQUI: 
+    // Só bloqueia o salvamento se não houver novos horários E não houver nada para deletar.
+    // Isso permite que você salve uma lista vazia (removendo o funcionário da escala).
+    const isDeletingExisting = idsToDeleteOnSave.length > 0 || editingShift;
+    
+    if (areasWithDays.length === 0 && !isDeletingExisting) {
+      return alert("Adicione pelo menos uma modalidade com dias configurados");
+    }
 
     setLoading(true);
 
     try {
-      // 1. LIMPEZA (Se for edição)
+      // 1. LIMPEZA (Deleta os horários antigos marcados)
+      // A lógica é: deletamos tudo que existia antes e recriamos apenas o que ficou no formulário.
+      // Se o usuário removeu um dia no formulário, ele será deletado aqui e não será recriado abaixo.
       if (idsToDeleteOnSave.length > 0) {
         await Promise.all(idsToDeleteOnSave.map(id => deleteDoc(doc(db, "schedules", id))));
       } else if (editingShift) {
         await deleteDoc(doc(db, "schedules", editingShift.id));
       }
 
-      // 2. CRIAÇÃO
+      // 2. CRIAÇÃO (Recria apenas os horários que restaram no formulário)
       const newShiftsCreated = [];
 
       for (const key of Object.keys(newShift.schedulesByArea)) {
-        // TRUQUE: Removemos o sufixo " (2)" para salvar no banco com o nome real da área
         const realAreaName = key.split(' (')[0];
         const daysConfig = newShift.schedulesByArea[key];
 
         for (const day of Object.keys(daysConfig)) {
           const schedule = daysConfig[day];
-          const shiftData = {
-            employeeId: newShift.employeeId,
-            day: day,
-            start: schedule.start,
-            end: schedule.end,
-            area: realAreaName,
-          };
-          const docRef = await addDoc(collection(db, "schedules"), shiftData);
-          newShiftsCreated.push({ id: docRef.id, ...shiftData });
+          // Proteção extra: só cria se tiver start e end
+          if(schedule.start && schedule.end) {
+            const shiftData = {
+              employeeId: newShift.employeeId,
+              day: day,
+              start: schedule.start,
+              end: schedule.end,
+              area: realAreaName,
+            };
+            const docRef = await addDoc(collection(db, "schedules"), shiftData);
+            newShiftsCreated.push({ id: docRef.id, ...shiftData });
+          }
         }
       }
 
       // Atualiza Lista Local
       const deletedIds = idsToDeleteOnSave.length > 0 ? idsToDeleteOnSave : (editingShift ? [editingShift.id] : []);
+      // Remove os IDs deletados da lista visual
       const updatedList = shifts.filter(s => !deletedIds.includes(s.id));
+      // Adiciona os novos (se houver)
       setShifts([...updatedList, ...newShiftsCreated]);
 
       // Reset
