@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import MainLayout from '../components/layout/MainLayout';
-import { Plus, Trash2, User, Clock, DollarSign, Edit2, Calendar, BarChart3, Filter, X } from 'lucide-react';
+import { Plus, Trash2, User, Clock, DollarSign, Edit2, Calendar, BarChart3, Filter, X, LayoutGrid, List as ListIcon } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 const DAYS = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'];
@@ -20,10 +20,29 @@ const Schedule = () => {
       setEditingShift(null);
     }
   }, [isModalOpen]);
-  const [activeTab, setActiveTab] = useState('grade'); // 'grade' ou 'heatmap'
+  const [activeTab, setActiveTab] = useState('grade'); 
+  const [viewMode, setViewMode] = useState('grid'); // 'grid' ou 'list'
   const [filterArea, setFilterArea] = useState('all');
   const [filterEmployee, setFilterEmployee] = useState('all');
 
+  const [viewingCell, setViewingCell] = useState(null); 
+  const [batchStartTime, setBatchStartTime] = useState('06:00');
+  const [batchEndTime, setBatchEndTime] = useState('12:00');
+  // Função auxiliar para calcular duração
+  const calculateDuration = (start, end) => {
+    if (!start || !end) return null;
+    const [startH, startM] = start.split(':').map(Number);
+    const [endH, endM] = end.split(':').map(Number);
+    
+    let diff = (endH * 60 + endM) - (startH * 60 + startM);
+    if (diff < 0) diff += 24 * 60; // Trata virada de noite
+    
+    const hours = Math.floor(diff / 60);
+    const minutes = diff % 60;
+    
+    if (minutes > 0) return `${hours}h ${minutes}min`;
+    return `${hours}h`;
+  };
   // Estado do Novo Turno
   const [newShift, setNewShift] = useState({
     employeeId: '',
@@ -391,71 +410,137 @@ const Schedule = () => {
         <>
           {/* 3. Resumo de Horas por Funcionário */}
           <div className="bg-[#29292e] border border-[#323238] rounded-xl p-6 mb-6">
-            <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
-              <User className="text-[#850000]" size={20} />
-              Carga Horária Semanal
-            </h3>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {employees.filter(emp => {
-                // Mostrar apenas funcionários que têm turnos
-                return shifts.some(s => s.employeeId === emp.id);
-              }).map(emp => {
-                const totalHours = calculateEmployeeHours(emp.id);
-
-                // Calcular custo considerando valores por área
-                let monthlyCost;
-                if (emp.type === 'mensalista') {
-                  monthlyCost = parseFloat(emp.value) || 0;
-                } else {
-                  // Soma o custo de cada turno individualmente (considerando área)
-                  const weeklyCost = filteredShifts
-                    .filter(s => s.employeeId === emp.id)
-                    .reduce((acc, shift) => acc + calculateShiftCost(shift), 0);
-                  monthlyCost = weeklyCost * 4.5;
-                }
-
-                return (
-                  <div key={emp.id} className="bg-[#1a1a1a] border border-[#323238] rounded-lg p-4 relative group">
-                    <button
-                      onClick={() => handleEditEmployeeGlobal(emp.id)}
-                      className="absolute top-2 right-2 p-1.5 text-gray-500 hover:text-white hover:bg-[#323238] rounded-lg opacity-0 group-hover:opacity-100 transition-all"
-                      title="Editar Grade Completa"
-                    >
-                      <Edit2 size={16} />
-                    </button>
-                    <div className="flex items-center gap-3 mb-3">
-                      <div className="w-10 h-10 rounded-full bg-[#29292e] border border-[#323238] flex items-center justify-center text-sm font-bold text-white">
-                        {emp.name.charAt(0)}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-white font-medium text-sm truncate">{emp.name}</p>
-                        <p className="text-xs text-gray-400 capitalize">{emp.role}</p>
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <div className="flex justify-between items-center">
-                        <span className="text-xs text-gray-400">Horas/Semana:</span>
-                        <span className="text-white font-bold">{totalHours}h</span>
-                      </div>
-
-                      <div className="flex justify-between items-center">
-                        <span className="text-xs text-gray-400">Custo Mensal:</span>
-                        <span className="text-[#850000] font-bold text-sm">
-                          R$ {monthlyCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                        </span>
-                      </div>
-
-                      <div className="flex justify-between items-center pt-2 border-t border-[#323238]">
-                        <span className="text-xs text-gray-400">Turnos:</span>
-                        <span className="text-white text-sm">{shifts.filter(s => s.employeeId === emp.id).length}</span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                <User className="text-[#850000]" size={20} />
+                Carga Horária Semanal
+              </h3>
+              
+              {/* Botões de Alternância (Grid/Lista) */}
+              <div className="flex bg-[#121214] rounded-lg p-1 border border-[#323238]">
+                <button 
+                  onClick={() => setViewMode('grid')}
+                  className={`p-2 rounded transition-all ${viewMode === 'grid' ? 'bg-[#323238] text-white' : 'text-gray-500 hover:text-gray-300'}`}
+                  title="Visualização em Cards"
+                >
+                  <LayoutGrid size={18} />
+                </button>
+                <button 
+                  onClick={() => setViewMode('list')}
+                  className={`p-2 rounded transition-all ${viewMode === 'list' ? 'bg-[#323238] text-white' : 'text-gray-500 hover:text-gray-300'}`}
+                  title="Visualização em Lista"
+                >
+                  <ListIcon size={18} />
+                </button>
+              </div>
             </div>
+
+            {viewMode === 'grid' ? (
+              /* VISUALIZAÇÃO EM CARDS (Original) */
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {employees.filter(emp => shifts.some(s => s.employeeId === emp.id)).map(emp => {
+                  const totalHours = calculateEmployeeHours(emp.id);
+                  let monthlyCost = 0;
+                  if (emp.type === 'mensalista') {
+                    monthlyCost = parseFloat(emp.value) || 0;
+                  } else {
+                    const weeklyCost = filteredShifts
+                      .filter(s => s.employeeId === emp.id)
+                      .reduce((acc, shift) => acc + calculateShiftCost(shift), 0);
+                    monthlyCost = weeklyCost * 4.5;
+                  }
+
+                  return (
+                    <div key={emp.id} className="bg-[#1a1a1a] border border-[#323238] rounded-lg p-4 relative group hover:border-[#850000]/50 transition-all">
+                      <button
+                        onClick={() => handleEditEmployeeGlobal(emp.id)}
+                        className="absolute top-2 right-2 p-1.5 text-gray-500 hover:text-white hover:bg-[#323238] rounded-lg opacity-0 group-hover:opacity-100 transition-all"
+                      >
+                        <Edit2 size={16} />
+                      </button>
+                      <div className="flex items-center gap-3 mb-3">
+                        <div className="w-10 h-10 rounded-full bg-[#29292e] border border-[#323238] flex items-center justify-center text-sm font-bold text-white">
+                          {emp.name.charAt(0)}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white font-medium text-sm truncate">{emp.name}</p>
+                          <p className="text-xs text-gray-400 capitalize">{emp.role}</p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2 border-t border-[#323238] pt-3">
+                        <div className="flex justify-between items-center">
+                          <span className="text-xs text-gray-400">Horas/Semana:</span>
+                          <span className="text-white font-bold">{totalHours}h</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-xs text-gray-400">Custo Est. (Mês):</span>
+                          <span className="text-[#850000] font-bold text-sm">
+                            R$ {monthlyCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              /* VISUALIZAÇÃO EM LISTA (Nova Tabela) */
+              <div className="overflow-x-auto rounded-lg border border-[#323238]">
+                <table className="w-full text-left border-collapse">
+                  <thead className="bg-[#1a1a1a]">
+                    <tr>
+                      <th className="py-3 px-4 text-xs font-medium text-gray-400 uppercase border-b border-[#323238]">Funcionário</th>
+                      <th className="py-3 px-4 text-xs font-medium text-gray-400 uppercase text-center border-b border-[#323238]">Cargo</th>
+                      <th className="py-3 px-4 text-xs font-medium text-gray-400 uppercase text-center border-b border-[#323238]">Horas/Semana</th>
+                      <th className="py-3 px-4 text-xs font-medium text-gray-400 uppercase text-center border-b border-[#323238]">Turnos</th>
+                      <th className="py-3 px-4 text-xs font-medium text-gray-400 uppercase text-right border-b border-[#323238]">Custo Mensal Est.</th>
+                      <th className="py-3 px-4 text-xs font-medium text-gray-400 uppercase text-center border-b border-[#323238]">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-[#29292e]">
+                    {employees.filter(emp => shifts.some(s => s.employeeId === emp.id)).map(emp => {
+                      const totalHours = calculateEmployeeHours(emp.id);
+                      let monthlyCost = 0;
+                      if (emp.type === 'mensalista') {
+                        monthlyCost = parseFloat(emp.value) || 0;
+                      } else {
+                        const weeklyCost = filteredShifts
+                          .filter(s => s.employeeId === emp.id)
+                          .reduce((acc, shift) => acc + calculateShiftCost(shift), 0);
+                        monthlyCost = weeklyCost * 4.5;
+                      }
+
+                      return (
+                        <tr key={emp.id} className="border-b border-[#323238] hover:bg-[#323238] transition-colors last:border-0">
+                          <td className="py-3 px-4 flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-full bg-[#1a1a1a] border border-[#323238] flex items-center justify-center text-xs font-bold text-white">
+                              {emp.name.charAt(0)}
+                            </div>
+                            <span className="text-white text-sm font-medium">{emp.name}</span>
+                          </td>
+                          <td className="py-3 px-4 text-center text-gray-400 text-sm capitalize">{emp.role}</td>
+                          <td className="py-3 px-4 text-center text-white font-bold text-sm">{totalHours}h</td>
+                          <td className="py-3 px-4 text-center text-gray-400 text-sm">{shifts.filter(s => s.employeeId === emp.id).length}</td>
+                          <td className="py-3 px-4 text-right text-[#850000] font-mono text-sm font-bold">
+                            R$ {monthlyCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            <button 
+                              onClick={() => handleEditEmployeeGlobal(emp.id)} 
+                              className="text-gray-500 hover:text-white p-2 hover:bg-[#404045] rounded transition-all"
+                              title="Editar Grade"
+                            >
+                              <Edit2 size={16} />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </>
       )}
@@ -834,7 +919,7 @@ const Schedule = () => {
                                 </div>
                               </div>
 
-                              {/* Linha 2: Replicador de Horário (Entrada/Saída para Todos) */}
+                              {/* Linha 2: Replicador de Horário (Com Duração) */}
                               <div className="flex items-center justify-between gap-2">
                                 <div className="flex items-center gap-2">
                                   <span className="text-xs text-gray-400">Padrão:</span>
@@ -851,6 +936,10 @@ const Schedule = () => {
                                     onChange={e => setBatchEndTime(e.target.value)}
                                     className="bg-[#121214] border border-[#323238] rounded px-2 py-1 text-xs text-white focus:border-[#850000] outline-none w-20"
                                   />
+                                  {/* Mostra a duração do padrão */}
+                                  <span className="text-xs text-[#850000] font-mono font-bold ml-1 bg-[#850000]/10 px-1.5 py-0.5 rounded border border-[#850000]/30">
+                                    {calculateDuration(batchStartTime, batchEndTime)}
+                                  </span>
                                 </div>
                                 <button
                                   type="button"
@@ -882,7 +971,7 @@ const Schedule = () => {
                             {Object.keys(daysConfig).sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b)).map(day => {
                               const schedule = daysConfig[day];
                               return (
-                                <div key={day} className="bg-[#29292e] border border-[#323238] rounded-lg p-3">
+                                <div key={day} className="bg-[#29292e] border border-[#323238] rounded-lg p-3 group hover:border-gray-500 transition-colors">
                                   <div className="flex items-center gap-3">
                                     <span className="text-white text-sm font-medium w-16">{day.substring(0, 3)}</span>
                                     <input
@@ -893,7 +982,7 @@ const Schedule = () => {
                                         newSchedules[area][day].start = e.target.value;
                                         setNewShift({ ...newShift, schedulesByArea: newSchedules });
                                       }}
-                                      className="flex-1 bg-[#1a1a1a] border border-[#323238] rounded px-3 py-2 text-white text-xs"
+                                      className="flex-1 bg-[#1a1a1a] border border-[#323238] rounded px-3 py-2 text-white text-xs outline-none focus:border-[#850000]"
                                     />
                                     <span className="text-gray-500">→</span>
                                     <input
@@ -904,11 +993,15 @@ const Schedule = () => {
                                         newSchedules[area][day].end = e.target.value;
                                         setNewShift({ ...newShift, schedulesByArea: newSchedules });
                                       }}
-                                      className="flex-1 bg-[#1a1a1a] border border-[#323238] rounded px-3 py-2 text-white text-xs"
+                                      className="flex-1 bg-[#1a1a1a] border border-[#323238] rounded px-3 py-2 text-white text-xs outline-none focus:border-[#850000]"
                                     />
-                                    <span className="text-[#850000] text-xs font-mono">
-                                      {parseInt(schedule.end.split(':')[0]) - parseInt(schedule.start.split(':')[0])}h
-                                    </span>
+                                    
+                                    {/* Duração Calculada */}
+                                    <div className="w-20 text-right">
+                                      <span className="text-[#850000] text-xs font-mono font-bold bg-[#1a1a1a] px-2 py-1 rounded border border-[#323238]">
+                                        {calculateDuration(schedule.start, schedule.end)}
+                                      </span>
+                                    </div>
                                   </div>
                                 </div>
                               );
@@ -1013,7 +1106,7 @@ const Schedule = () => {
                 </div>
             )}
     </MainLayout>
-  );
+  ); 
 };
 
 export default Schedule;

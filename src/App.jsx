@@ -8,6 +8,7 @@ import Settings from './pages/Settings';
 import Coverage from './pages/Coverage';
 import Employees from './pages/Employees';
 import Schedule from './pages/Schedule';
+import Financial from './pages/Financial';
 
 function App() {
   return (
@@ -18,6 +19,7 @@ function App() {
           <Route path="/usuarios" element={<Users />} />
           <Route path="/employees" element={<Employees />} />
           <Route path="/schedule" element={<Schedule />} />
+          <Route path="/financeiro" element={<Financial />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/cobertura" element={<Coverage />} />
           <Route path="/" element={<Dashboard />} />

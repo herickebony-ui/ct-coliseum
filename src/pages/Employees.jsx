@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import MainLayout from '../components/layout/MainLayout';
-import { Plus, Search, Trash2, Edit2, FileText, X, Check } from 'lucide-react';
+import { Plus, Search, Trash2, Edit2, FileText, X, Check, LayoutGrid, List as ListIcon, Settings, Save } from 'lucide-react';
+import { writeBatch } from 'firebase/firestore'; // Importante para atualização em massa
 import { db } from '../lib/firebase';
 import { collection, addDoc, getDocs, deleteDoc, doc, setDoc } from 'firebase/firestore';
 
@@ -11,6 +12,76 @@ const Employees = () => {
   const [editingId, setEditingId] = useState(null);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [isDocumentsModalOpen, setIsDocumentsModalOpen] = useState(false);
+  // --- GERENCIADOR DE CARGOS ---
+  const [isRoleManagerOpen, setIsRoleManagerOpen] = useState(false);
+  const [editingRoleOriginalName, setEditingRoleOriginalName] = useState(null); // Qual cargo estamos editando
+  const [editingRoleNewName, setEditingRoleNewName] = useState(''); // O novo nome
+
+  // Contar uso dos cargos
+  const getRoleUsageCount = (roleName) => {
+    return employees.filter(e => e.role === roleName).length;
+  };
+
+  // 1. RENOMEAR CARGO (EM CASCATA)
+  const handleUpdateRoleName = async () => {
+    if (!editingRoleNewName.trim()) return;
+    if (availableRoles.includes(editingRoleNewName)) return alert("Já existe um cargo com este nome.");
+
+    const oldName = editingRoleOriginalName;
+    const newName = editingRoleNewName.trim();
+
+    if (!confirm(`Isso alterará o cargo de ${getRoleUsageCount(oldName)} funcionários de "${oldName}" para "${newName}". Deseja continuar?`)) return;
+
+    setLoading(true);
+    try {
+      // A. Atualizar no Firebase (Batch Write - Seguro e Rápido)
+      const batch = writeBatch(db);
+      const affectedEmployees = employees.filter(e => e.role === oldName);
+
+      affectedEmployees.forEach(emp => {
+        const empRef = doc(db, "employees", emp.id);
+        batch.update(empRef, { role: newName });
+      });
+
+      await batch.commit();
+
+      // B. Atualizar Listas Locais
+      setAvailableRoles(prev => prev.map(r => r === oldName ? newName : r));
+      setEmployees(prev => prev.map(e => e.role === oldName ? { ...e, role: newName } : e));
+
+      // Se o filtro estava no cargo antigo, atualiza para o novo
+      if (filterRole === oldName) setFilterRole(newName);
+
+      setEditingRoleOriginalName(null);
+      setEditingRoleNewName('');
+    } catch (error) {
+      console.error(error);
+      alert("Erro ao atualizar cargos: " + error.message);
+    }
+    setLoading(false);
+  };
+
+  // 2. EXCLUIR CARGO (COM TRAVA DE SEGURANÇA)
+  const handleDeleteRole = (roleToDelete) => {
+    const usage = getRoleUsageCount(roleToDelete);
+
+    if (usage > 0) {
+      return alert(`⚠️ AÇÃO BLOQUEADA\n\nExistem ${usage} funcionário(s) vinculados ao cargo "${roleToDelete}".\n\nVocê precisa alterar o cargo desses funcionários antes de excluir esta opção.`);
+    }
+
+    if (confirm(`Excluir o cargo "${roleToDelete}" da lista de opções?`)) {
+      setAvailableRoles(prev => prev.filter(r => r !== roleToDelete));
+    }
+  };
+
+  // Estado de Visualização
+  const [viewMode, setViewMode] = useState('grid'); // 'grid' ou 'list'
+  const [filterRole, setFilterRole] = useState('all'); // Novo filtro de cargo
+
+  // Lógica de Filtragem
+  const filteredEmployees = employees.filter(emp => 
+    filterRole === 'all' || emp.role === filterRole
+  );
 
   // Estado do Formulário
   const [formData, setFormData] = useState({
@@ -18,9 +89,10 @@ const Employees = () => {
     role: '',
     type: 'hora_aula',
     value: '',
+    costReal: '', // Novo campo para Financeiro
     phone: '',
     active: true,
-    valuesByArea: {} // Valores personalizados por área
+    valuesByArea: {}
   });
 
   // Estados para adicionar nova modalidade
@@ -116,25 +188,22 @@ const handleRemoveAreaValue = (areaToRemove) => {
 
     setLoading(true);
     try {
+      const payload = {
+        ...formData,
+        value: parseFloat(formData.value) || 0,
+        costReal: parseFloat(formData.costReal) || 0, // Salva o custo real
+        updatedAt: new Date()
+      };
+
       if (editingId) {
-        // EDITAR funcionário existente
-        await setDoc(doc(db, "employees", editingId), {
-          ...formData,
-          value: parseFloat(formData.value),
-          updatedAt: new Date()
-        }, { merge: true });
+        await setDoc(doc(db, "employees", editingId), payload, { merge: true });
       } else {
-        // CRIAR novo funcionário
-        await addDoc(collection(db, "employees"), {
-          ...formData,
-          value: parseFloat(formData.value),
-          createdAt: new Date()
-        });
+        await addDoc(collection(db, "employees"), { ...payload, createdAt: new Date() });
       }
 
       setIsModalOpen(false);
       setEditingId(null);
-      setFormData({ name: '', role: '', type: 'hora_aula', value: '', phone: '', active: true });
+      setFormData({ name: '', role: '', type: 'hora_aula', value: '', costReal: '', phone: '', active: true, valuesByArea: {} });
       fetchEmployees();
     } catch (error) {
       console.error("Erro ao salvar:", error);
@@ -156,6 +225,7 @@ const handleRemoveAreaValue = (areaToRemove) => {
       role: employee.role,
       type: employee.type,
       value: employee.value.toString(),
+      costReal: employee.costReal ? employee.costReal.toString() : '', // Carrega o custo real
       phone: employee.phone || '',
       active: employee.active,
       valuesByArea: employee.valuesByArea || {}
@@ -167,74 +237,162 @@ const handleRemoveAreaValue = (areaToRemove) => {
   return (
     <MainLayout>
       {/* Cabeçalho da Página */}
-      <div className="flex justify-between items-center mb-8">
+      <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
         <div>
-          <h2 className="text-3xl font-bold text-white">Funcionários</h2>
+          <h2 className="text-3xl font-bold text-white flex items-center gap-2">
+            Funcionários
+            <span className="bg-[#202024] text-gray-400 text-sm py-1 px-3 rounded-full border border-[#323238]">
+              {filteredEmployees.length}
+            </span>
+          </h2>
           <p className="text-ice-400 mt-1">Gerencie sua equipe, cargos e custos.</p>
         </div>
+        
+        <div className="flex gap-3 items-center flex-wrap justify-end">
         <button
-          onClick={() => setIsModalOpen(true)}
-          className="bg-brand-red hover:bg-red-700 text-white px-5 py-3 rounded-xl font-medium flex items-center gap-2 transition-all shadow-neon"
-        >
-          <Plus size={20} />
-          Novo Cadastro
-        </button>
-      </div>
-
-      {/* Lista de Funcionários (Cards) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {employees.map((emp) => (
-          <div key={emp.id} className="bg-ebony-800 border border-ebony-700 rounded-2xl p-6 hover:border-brand-red/30 transition-all group">
-            <div className="flex justify-between items-start mb-4">
-              <div className="w-12 h-12 rounded-full bg-ebony-950 border border-ebony-700 flex items-center justify-center text-xl font-bold text-ice-200">
-                {emp.name.charAt(0)}
-              </div>
-              <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button
-                  onClick={() => handleEdit(emp)}
-                  className="p-2 hover:bg-[#323238] rounded-lg text-gray-400 hover:text-white"
-                  title="Editar"
-                >
-                  <Edit2 size={18} />
-                </button>
-                <button
-                  onClick={() => {
-                    setSelectedEmployee(emp);
-                    setIsDocumentsModalOpen(true);
-                  }}
-                  className="p-2 hover:bg-[#323238] rounded-lg text-gray-400 hover:text-white"
-                  title="Documentos"
-                >
-                  <FileText size={18} />
-                </button>
-                <button
-                  onClick={() => handleDelete(emp.id)}
-                  className="p-2 hover:bg-red-900/20 rounded-lg text-red-500 hover:text-red-400"
-                  title="Excluir"
-                >
-                  <Trash2 size={18} />
-                </button>
-              </div>
-            </div>
-
-            <h3 className="text-xl font-bold text-white">{emp.name}</h3>
-            <p className="text-brand-red text-sm font-medium uppercase tracking-wider mb-4">{emp.role}</p>
-
-            <div className="space-y-2 text-sm text-ice-400 bg-ebony-950/50 p-4 rounded-xl border border-ebony-700/50">
-              <div className="flex justify-between">
-                <span>Contrato:</span>
-                <span className="text-ice-200 capitalize">{emp.type.replace('_', ' ')}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Base:</span>
-                <span className="text-ice-200 font-mono">
-                  {emp.type === 'hora_aula' ? `R$ ${emp.value}/h` : `R$ ${emp.value}/mês`}
-                </span>
-              </div>
+            onClick={() => setIsRoleManagerOpen(true)}
+            className="p-3 bg-[#202024] border border-[#323238] rounded-xl text-gray-400 hover:text-white hover:border-[#850000] transition-all"
+            title="Gerenciar Cargos"
+          >
+            <Settings size={20} />
+          </button>
+          {/* Filtro de Cargo */}
+          <div className="relative group">
+             <select
+              value={filterRole}
+              onChange={(e) => setFilterRole(e.target.value)}
+              className="appearance-none bg-[#121214] border border-[#323238] rounded-xl px-4 py-3 pr-8 text-sm text-white focus:border-[#850000] outline-none cursor-pointer hover:bg-[#202024] transition-colors"
+            >
+              <option value="all">Todos os Cargos</option>
+              {availableRoles.map(role => (
+                <option key={role} value={role}>{role}</option>
+              ))}
+            </select>
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
+              ▼
             </div>
           </div>
-        ))}
+
+          {/* Botões de Visualização */}
+          <div className="flex bg-[#121214] rounded-xl p-1 border border-[#323238]">
+            <button 
+              onClick={() => setViewMode('grid')}
+              className={`p-2 rounded-lg transition-all ${viewMode === 'grid' ? 'bg-[#323238] text-white' : 'text-gray-500 hover:text-gray-300'}`}
+              title="Cards"
+            >
+              <LayoutGrid size={20} />
+            </button>
+            <button 
+              onClick={() => setViewMode('list')}
+              className={`p-2 rounded-lg transition-all ${viewMode === 'list' ? 'bg-[#323238] text-white' : 'text-gray-500 hover:text-gray-300'}`}
+              title="Lista"
+            >
+              <ListIcon size={20} />
+            </button>
+          </div>
+
+          <button
+            onClick={() => setIsModalOpen(true)}
+            className="bg-[#850000] hover:bg-red-700 text-white px-5 py-3 rounded-xl font-medium flex items-center gap-2 transition-all shadow-neon"
+          >
+            <Plus size={20} />
+            Novo
+          </button>
+        </div>
       </div>
+
+      {/* CONTEÚDO PRINCIPAL (Grid vs Lista) */}
+      {viewMode === 'grid' ? (
+        // VISUALIZAÇÃO EM GRID
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {filteredEmployees.map((emp) => (
+            <div key={emp.id} className="bg-[#202024] border border-[#323238] rounded-2xl p-6 hover:border-[#850000]/30 transition-all group">
+              <div className="flex justify-between items-start mb-4">
+                <div className="w-12 h-12 rounded-full bg-[#121214] border border-[#323238] flex items-center justify-center text-xl font-bold text-gray-200">
+                  {emp.name.charAt(0)}
+                </div>
+                <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button onClick={() => handleEdit(emp)} className="p-2 hover:bg-[#323238] rounded-lg text-gray-400 hover:text-white"><Edit2 size={18} /></button>
+                  <button onClick={() => { setSelectedEmployee(emp); setIsDocumentsModalOpen(true); }} className="p-2 hover:bg-[#323238] rounded-lg text-gray-400 hover:text-white"><FileText size={18} /></button>
+                  <button onClick={() => handleDelete(emp.id)} className="p-2 hover:bg-red-900/20 rounded-lg text-red-500 hover:text-red-400"><Trash2 size={18} /></button>
+                </div>
+              </div>
+              <h3 className="text-xl font-bold text-white">{emp.name}</h3>
+              <p className="text-[#850000] text-sm font-medium uppercase tracking-wider mb-4">{emp.role}</p>
+              <div className="space-y-2 text-sm text-gray-400 bg-[#121214]/50 p-4 rounded-xl border border-[#323238]/50">
+                <div className="flex justify-between">
+                  <span>Contrato:</span>
+                  <span className="text-gray-200 capitalize">{emp.type === 'mensalista' ? 'Mensalista (CLT)' : 'Hora Aula'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Base:</span>
+                  <span className="text-gray-200 font-mono">
+                    {emp.type === 'hora_aula' ? `R$ ${emp.value}/h` : `R$ ${emp.value}/mês`}
+                  </span>
+                </div>
+                {/* Exibe o Custo Real no Card se existir e for Mensalista */}
+                {emp.type === 'mensalista' && emp.costReal > 0 && (
+                  <div className="flex justify-between border-t border-[#323238] pt-2 mt-2">
+                    <span className="text-[#850000]">Custo Real:</span>
+                    <span className="text-[#850000] font-bold font-mono">R$ {emp.costReal}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        // VISUALIZAÇÃO EM LISTA (TABELA)
+        <div className="bg-[#202024] border border-[#323238] rounded-xl overflow-hidden">
+          <table className="w-full text-left border-collapse">
+            <thead className="bg-[#121214]">
+              <tr>
+                <th className="py-4 px-6 text-xs font-medium text-gray-400 uppercase border-b border-[#323238]">Colaborador</th>
+                <th className="py-4 px-6 text-xs font-medium text-gray-400 uppercase border-b border-[#323238]">Cargo</th>
+                <th className="py-4 px-6 text-xs font-medium text-gray-400 uppercase border-b border-[#323238]">Contrato</th>
+                <th className="py-4 px-6 text-xs font-medium text-gray-400 uppercase border-b border-[#323238] text-right">Base Salarial</th>
+                <th className="py-4 px-6 text-xs font-medium text-gray-400 uppercase border-b border-[#323238] text-right">Custo Real (Empresa)</th>
+                <th className="py-4 px-6 text-xs font-medium text-gray-400 uppercase border-b border-[#323238] text-center">Ações</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#323238]">
+              {filteredEmployees.map((emp) => (
+                <tr key={emp.id} className="hover:bg-[#29292e] transition-colors">
+                  <td className="py-4 px-6">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-[#1a1a1a] border border-[#323238] flex items-center justify-center text-xs font-bold text-white">
+                        {emp.name.charAt(0)}
+                      </div>
+                      <span className="text-white font-medium">{emp.name}</span>
+                    </div>
+                  </td>
+                  <td className="py-4 px-6 text-gray-300 text-sm">{emp.role}</td>
+                  <td className="py-4 px-6 text-gray-400 text-sm capitalize">
+                    {emp.type === 'mensalista' ? 'CLT / Fixo' : 'Hora Aula'}
+                  </td>
+                  <td className="py-4 px-6 text-right text-white font-mono text-sm">
+                     {emp.type === 'hora_aula' ? `R$ ${emp.value}/h` : `R$ ${emp.value}`}
+                  </td>
+                  <td className="py-4 px-6 text-right font-mono text-sm">
+                    {emp.type === 'mensalista' ? (
+                       emp.costReal > 0 ? (
+                         <span className="text-[#850000] font-bold">R$ {emp.costReal}</span>
+                       ) : <span className="text-gray-600">-</span>
+                    ) : <span className="text-gray-600">N/A</span>}
+                  </td>
+                  <td className="py-4 px-6">
+                    <div className="flex justify-center gap-2">
+                      <button onClick={() => handleEdit(emp)} className="p-2 hover:bg-[#323238] rounded-lg text-gray-400 hover:text-white" title="Editar"><Edit2 size={16} /></button>
+                      <button onClick={() => { setSelectedEmployee(emp); setIsDocumentsModalOpen(true); }} className="p-2 hover:bg-[#323238] rounded-lg text-gray-400 hover:text-white" title="Docs"><FileText size={16} /></button>
+                      <button onClick={() => handleDelete(emp.id)} className="p-2 hover:bg-red-900/20 rounded-lg text-red-500 hover:text-red-400" title="Excluir"><Trash2 size={16} /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Modal de Cadastro (Simples) */}
       {isModalOpen && (
@@ -336,20 +494,41 @@ const handleRemoveAreaValue = (areaToRemove) => {
     </div>
   </div>
 
-  {/* 3. Valor Base */}
-  <div>
-    <label className="block text-sm text-gray-400 mb-1">
-      {formData.type === 'hora_aula' ? 'Valor Padrão (R$/hora)' : 'Salário Fixo (R$/mês)'}
-    </label>
-    <input
-      type="number"
-      step="0.01"
-      className="w-full bg-[#1a1a1a] border border-[#323238] rounded-lg px-4 py-3 text-white focus:border-[#850000] outline-none font-mono"
-      value={formData.value}
-      onChange={e => setFormData({ ...formData, value: e.target.value })}
-      required
-    />
-  </div>
+  {/* 3. Valores Financeiros */}
+  <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">
+                {formData.type === 'hora_aula' ? 'Valor Hora (R$)' : 'Salário em Carteira (R$)'}
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                className="w-full bg-[#1a1a1a] border border-[#323238] rounded-lg px-4 py-3 text-white focus:border-[#850000] outline-none font-mono"
+                value={formData.value}
+                onChange={e => setFormData({ ...formData, value: e.target.value })}
+                required
+              />
+            </div>
+
+            {/* Campo Custo Real (Apenas para Mensalistas) */}
+            {formData.type === 'mensalista' && (
+              <div>
+                <label className="block text-sm text-[#850000] font-medium mb-1 flex items-center gap-1">
+                   Custo Real (Empresa)
+                   <span className="text-gray-500 text-[10px] font-normal border border-gray-600 rounded-full px-1 cursor-help" title="Soma de Salário + VT + VR + Impostos + Provisões">?</span>
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  placeholder="Total gasto mensal"
+                  className="w-full bg-[#1a1a1a] border border-[#850000]/50 rounded-lg px-4 py-3 text-white focus:border-[#850000] outline-none font-mono"
+                  value={formData.costReal}
+                  onChange={e => setFormData({ ...formData, costReal: e.target.value })}
+                />
+                <p className="text-[10px] text-gray-500 mt-1">*Usado no painel Financeiro</p>
+              </div>
+            )}
+          </div>
 
   {/* 4. Valores por Modalidade (Novo Layout Compacto) */}
   {formData.type === 'hora_aula' && (
@@ -471,6 +650,82 @@ const handleRemoveAreaValue = (areaToRemove) => {
     </button>
   </div>
 </form>
+          </div>
+        </div>
+      )}
+      {/* Modal de Gerenciamento de Cargos */}
+      {isRoleManagerOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-[#29292e] border border-[#323238] rounded-2xl p-6 w-full max-w-md shadow-2xl">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                <Settings className="text-[#850000]" size={20} />
+                Gerenciar Cargos
+              </h3>
+              <button onClick={() => setIsRoleManagerOpen(false)} className="text-gray-400 hover:text-white"><X size={20} /></button>
+            </div>
+
+            <div className="space-y-2 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">
+              {availableRoles.map(role => (
+                <div key={role} className="flex items-center justify-between bg-[#1a1a1a] p-3 rounded-lg border border-[#323238] group hover:border-gray-600 transition-colors">
+
+                  {/* Modo Edição vs Modo Visualização */}
+                  {editingRoleOriginalName === role ? (
+                    <div className="flex items-center gap-2 flex-1">
+                      <input 
+                        autoFocus
+                        type="text" 
+                        value={editingRoleNewName}
+                        onChange={(e) => setEditingRoleNewName(e.target.value)}
+                        className="bg-[#29292e] text-white text-sm px-2 py-1 rounded border border-[#850000] outline-none flex-1"
+                      />
+                      <button onClick={handleUpdateRoleName} className="text-green-500 hover:text-green-400 p-1"><Check size={18} /></button>
+                      <button onClick={() => setEditingRoleOriginalName(null)} className="text-red-500 hover:text-red-400 p-1"><X size={18} /></button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-3">
+                        <span className="text-white font-medium text-sm">{role}</span>
+                        <span className="text-xs text-gray-500 bg-[#29292e] px-2 py-0.5 rounded-full border border-[#323238]">
+                          {getRoleUsageCount(role)} func.
+                        </span>
+                      </div>
+
+                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button 
+                          onClick={() => {
+                            setEditingRoleOriginalName(role);
+                            setEditingRoleNewName(role);
+                          }}
+                          className="p-1.5 text-gray-400 hover:text-white hover:bg-[#323238] rounded"
+                          title="Renomear"
+                        >
+                          <Edit2 size={14} />
+                        </button>
+                        <button 
+                          onClick={() => handleDeleteRole(role)}
+                          className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-900/20 rounded"
+                          title="Excluir"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* Adicionar Rápido */}
+            <div className="mt-4 pt-4 border-t border-[#323238]">
+              <p className="text-xs text-gray-500 mb-2">Para adicionar um novo cargo, utilize o botão "Novo Cadastro" na tela principal.</p>
+              <button 
+                onClick={() => setIsRoleManagerOpen(false)}
+                className="w-full bg-[#323238] hover:bg-[#3a3a40] text-white py-2 rounded-lg font-medium transition-all"
+              >
+                Fechar
+              </button>
+            </div>
           </div>
         </div>
       )}
