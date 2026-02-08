@@ -3,7 +3,6 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { LayoutDashboard, Users, CalendarDays, Settings, Shield, LogOut, BarChart3 } from 'lucide-react';
-import { Calendar, Users } from 'lucide-react';
 
 const MainLayout = ({ children }) => {
   const { logout, userProfile } = useAuth();

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import MainLayout from '../components/layout/MainLayout';
-import { Plus, Search, Trash2, Edit2, FileText } from 'lucide-react';
+import { Plus, Search, Trash2, Edit2, FileText, X, Check } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, addDoc, getDocs, deleteDoc, doc, setDoc } from 'firebase/firestore';
 
@@ -22,6 +22,17 @@ const Employees = () => {
     active: true,
     valuesByArea: {} // Valores personalizados por área
   });
+
+  // Estados para adicionar nova modalidade
+  const [selectedAreaToAdd, setSelectedAreaToAdd] = useState('');
+  const [customAreaValue, setCustomAreaValue] = useState('');
+  const [isCreatingNewArea, setIsCreatingNewArea] = useState(false);
+  const [newAreaName, setNewAreaName] = useState('');
+  // Estados para replicar horário em massa
+  const [batchStartTime, setBatchStartTime] = useState('06:00');
+  const [batchEndTime, setBatchEndTime] = useState('12:00');
+  // Estado para visualizar detalhes do Heatmap
+  const [viewingCell, setViewingCell] = useState(null); // { day, hour, employees: [] }
 
   const [availableRoles, setAvailableRoles] = useState([
     'Instrutor',
@@ -63,6 +74,40 @@ const Employees = () => {
   useEffect(() => {
     fetchEmployees();
   }, []);
+  
+  // Função para adicionar valor customizado à lista
+  const handleAddAreaValue = () => {
+    const areaName = isCreatingNewArea ? newAreaName.trim() : selectedAreaToAdd;
+    
+    if (!areaName) return alert("Selecione ou digite o nome da modalidade");
+    if (!customAreaValue) return alert("Digite o valor para esta modalidade");
+
+    // Atualiza a lista de áreas disponíveis se for nova
+    if (isCreatingNewArea && !availableAreas.includes(areaName)) {
+        setAvailableAreas(prev => [...prev, areaName]);
+    }
+
+    setFormData(prev => ({
+        ...prev,
+        valuesByArea: {
+            ...prev.valuesByArea,
+            [areaName]: parseFloat(customAreaValue)
+        }
+    }));
+
+    // Resetar campos
+    setSelectedAreaToAdd('');
+    setCustomAreaValue('');
+    setIsCreatingNewArea(false);
+    setNewAreaName('');
+};
+
+// Remover valor customizado
+const handleRemoveAreaValue = (areaToRemove) => {
+    const newValues = { ...formData.valuesByArea };
+    delete newValues[areaToRemove];
+    setFormData({ ...formData, valuesByArea: newValues });
+};
 
   // Salvar no Firebase
   const handleSubmit = async (e) => {
@@ -306,45 +351,100 @@ const Employees = () => {
     />
   </div>
 
-  {/* 4. Valores por Modalidade (apenas para hora-aula) */}
+  {/* 4. Valores por Modalidade (Novo Layout Compacto) */}
   {formData.type === 'hora_aula' && (
     <div className="bg-[#1a1a1a] border border-[#323238] rounded-lg p-4">
       <label className="text-sm text-gray-400 mb-3 block">
-        Valores por Modalidade (opcional)
+        Valores Diferenciados
         <span className="text-xs text-gray-500 block mt-1">
-          Define valores diferentes para cada modalidade. Se vazio, usa o valor padrão.
+          Adicione apenas se o valor for diferente do padrão ({formData.value || '0'}/h).
         </span>
       </label>
       
-      <div className="space-y-2 max-h-48 overflow-y-auto">
-        {availableAreas.map(area => {
-          const areaValue = formData.valuesByArea?.[area] || '';
-          return (
-            <div key={area} className="flex items-center justify-between bg-[#29292e] border border-[#323238] rounded-lg p-3">
-              <span className="text-white text-sm font-medium">{area}</span>
-              <div className="flex items-center gap-2">
-                <span className="text-gray-500 text-xs">R$</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  placeholder={formData.value || '0'}
-                  value={areaValue}
-                  onChange={(e) => {
-                    const newValuesByArea = {...formData.valuesByArea};
-                    if (e.target.value) {
-                      newValuesByArea[area] = parseFloat(e.target.value);
-                    } else {
-                      delete newValuesByArea[area];
-                    }
-                    setFormData({...formData, valuesByArea: newValuesByArea});
-                  }}
-                  className="w-24 bg-[#1a1a1a] border border-[#323238] rounded px-3 py-2 text-white text-sm font-mono focus:border-[#850000] outline-none"
-                />
-                <span className="text-gray-500 text-xs">/h</span>
-              </div>
+      {/* Lista de Valores JÁ Adicionados */}
+      <div className="space-y-2 mb-4">
+        {Object.entries(formData.valuesByArea || {}).map(([area, val]) => (
+          <div key={area} className="flex items-center justify-between bg-[#29292e] border border-[#323238] rounded-lg p-2 pl-3">
+            <span className="text-white text-sm">{area}</span>
+            <div className="flex items-center gap-3">
+              <span className="text-brand-red font-mono text-sm">R$ {parseFloat(val).toFixed(2)}</span>
+              <button
+                type="button"
+                onClick={() => handleRemoveAreaValue(area)}
+                className="text-gray-500 hover:text-red-500 p-1"
+                title="Remover"
+              >
+                <Trash2 size={16} />
+              </button>
             </div>
-          );
-        })}
+          </div>
+        ))}
+        {Object.keys(formData.valuesByArea || {}).length === 0 && (
+           <p className="text-xs text-gray-600 italic">Nenhuma modalidade específica adicionada.</p>
+        )}
+      </div>
+
+      {/* Área de Adicionar Nova */}
+      <div className="flex gap-2 items-end pt-2 border-t border-[#323238]">
+        {/* Seletor ou Input de Nome */}
+        <div className="flex-1">
+            <label className="text-xs text-gray-500 mb-1 block">Modalidade</label>
+            {!isCreatingNewArea ? (
+                <select
+                    className="w-full bg-[#1a1a1a] border border-[#323238] rounded-lg px-3 py-2 text-white text-sm focus:border-[#850000] outline-none"
+                    value={selectedAreaToAdd}
+                    onChange={(e) => {
+                        if(e.target.value === '__novo__') setIsCreatingNewArea(true);
+                        else setSelectedAreaToAdd(e.target.value);
+                    }}
+                >
+                    <option value="">Selecione...</option>
+                    {availableAreas
+                        .filter(area => !formData.valuesByArea?.[area]) // Esconde as que já foram add
+                        .map(area => (
+                        <option key={area} value={area}>{area}</option>
+                    ))}
+                    <option value="__novo__" className="text-[#850000] font-bold">+ Nova Modalidade</option>
+                </select>
+            ) : (
+                <div className="flex gap-1">
+                    <input 
+                        type="text" 
+                        placeholder="Nome da modalidade"
+                        className="w-full bg-[#1a1a1a] border border-[#850000] rounded-lg px-3 py-2 text-white text-sm focus:outline-none"
+                        value={newAreaName}
+                        onChange={e => setNewAreaName(e.target.value)}
+                        autoFocus
+                    />
+                    <button type="button" onClick={() => setIsCreatingNewArea(false)} className="text-gray-400 hover:text-white px-2">
+                        <X size={16} />
+                    </button>
+                </div>
+            )}
+        </div>
+
+        {/* Input de Valor */}
+        <div className="w-24">
+            <label className="text-xs text-gray-500 mb-1 block">Valor (R$)</label>
+            <input
+                type="number"
+                step="0.01"
+                placeholder="0.00"
+                className="w-full bg-[#1a1a1a] border border-[#323238] rounded-lg px-3 py-2 text-white text-sm font-mono focus:border-[#850000] outline-none"
+                value={customAreaValue}
+                onChange={e => setCustomAreaValue(e.target.value)}
+            />
+        </div>
+
+        {/* Botão Adicionar */}
+        <button
+            type="button"
+            onClick={handleAddAreaValue}
+            className="bg-[#323238] hover:bg-[#850000] text-white p-2 rounded-lg transition-colors h-[38px] w-[38px] flex items-center justify-center"
+            title="Adicionar Valor"
+        >
+            <Plus size={18} />
+        </button>
       </div>
     </div>
   )}
